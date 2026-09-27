@@ -9,6 +9,11 @@ try {
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $code=Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 30000
     if($code -ne 23 -or [IO.File]::ReadAllText($out) -cne 'stdout-proof' -or [IO.File]::ReadAllText($err) -cne 'stderr-proof'){throw 'Lost process status or output'}
+    # PowerShell splats a scalar string into individual characters. The
+    # inventory path must construct an explicit array even for one test.
+    $selection='reparse_mount_target_test'
+    $inventoryArguments=@('--list')+@($selection)
+    if($inventoryArguments.Count -ne 2 -or $inventoryArguments[1] -cne $selection){throw 'Scalar test selection was split'}
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Start-Sleep -Seconds 60'))
     $timedOut=$false
     try {Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 1000 | Out-Null}
