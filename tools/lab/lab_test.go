@@ -81,6 +81,10 @@ func TestNativeWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	peerID, err := exec.Command("docker", "image", "inspect", "alpine:3.20", "--format", "{{.Id}}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
 	labd := os.Getenv("LABCONTAINERS_LABD")
 	buildInfo, err := exec.Command("go", "version", "-m", labd).CombinedOutput()
 	if err != nil || !strings.Contains(string(buildInfo), "vcs.revision="+helperRevision) || !strings.Contains(string(buildInfo), "vcs.modified=false") {
@@ -128,13 +132,23 @@ func TestNativeWindows(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	topo, err := clab.Source(topology(imageID, iso))
+	// Containerlab's local image lookup rejects bare Docker image IDs. Use
+	// the existing reference but attest each created container's actual ID
+	// before staging or executing anything inside the guest.
+	topo, err := clab.Source(topology(image, iso))
 	if err != nil {
 		t.Fatal(err)
 	}
 	session, err := c.Start(ctx, &labv1.LabSpec{Topology: topo, Nodes: map[string]*labv1.NodeExtension{"vm": {Control: "qga"}}}, 115*time.Minute)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for name, expected := range map[string]string{"vm": imageID, "peer": strings.TrimSpace(string(peerID))} {
+		actual, err := exec.Command("docker", "container", "inspect", "clab-"+session.Name()+"-"+name, "--format", "{{.Image}}").Output()
+		if err != nil || strings.TrimSpace(string(actual)) != expected {
+			t.Fatalf("runtime image mismatch for %s: %v %s", name, err, actual)
+		}
+		write("runtime-image-"+name+".txt", actual)
 	}
 	node := session.Node("vm")
 	ready := func(afterReboot bool) {
