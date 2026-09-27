@@ -1,9 +1,9 @@
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot/evidence.ps1"
 $inventory=@('create_test','reparse_test')
-$good="create_test............................. OK 0.01s`nreparse_test............................ OK 1.20s`n--- COMPLETE ---`n"
+$good="create_test............................ OK 0.01s`nreparse_test........................... OK 1.20s`n--- COMPLETE ---`n"
 Assert-NativeSuiteEvidence $inventory $good 0
-foreach($bad in @('',($good -replace '--- COMPLETE ---',''),($good -replace 'OK 1.20s','KO'),($good -replace 'reparse_test','wrong_test__'),($good+"unexpected`n"))) {
+foreach($bad in @('',($good -replace '--- COMPLETE ---',''),($good -replace 'OK 1.20s','KO'),($good -replace 'reparse_test','wrong_test__'),($good -replace ' OK','. OK'),($good+"unexpected`n"))) {
     $rejected=$false
     try{Assert-NativeSuiteEvidence $inventory $bad 0}catch{$rejected=$true}
     if(-not $rejected){throw 'Invalid native output accepted'}

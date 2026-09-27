@@ -6,6 +6,8 @@ Start-Transcript C:\lab\install-transcript.txt
 $manifest = Get-Content C:\lab\output\manifest.json -Raw | ConvertFrom-Json
 if (-not $manifest.lab_only) { throw 'Expected lab-only artifact manifest' }
 if ((Get-FileHash C:\lab\output\winfsp-x64.sys).Hash -ine $manifest.driver_sha256) { throw 'Driver digest mismatch' }
+$signature=Get-AuthenticodeSignature C:\lab\output\winfsp-x64.sys
+if(-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ine $manifest.certificate_thumbprint) { throw 'Driver signer does not match lab certificate' }
 & whoami.exe /all
 foreach($store in @('Root','TrustedPublisher')) {
     # Import-Certificate fails on fresh guests whose TrustedPublisher store

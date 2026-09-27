@@ -29,17 +29,10 @@ $arguments=switch($Suite) {
 }
 & .\winfsp-tests-x64.exe --list @arguments > "C:\lab\inventory-$Suite.txt"
 if ($LASTEXITCODE -ne 0) { throw 'Native inventory failed' }
+$env:WINFSP_TESTS_EXPECT_DLL='C:\lab\output\winfsp-x64.dll'
 $p=Start-Process .\winfsp-tests-x64.exe -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput "C:\lab\native-$Suite.log" -RedirectStandardError "C:\lab\native-$Suite.stderr.txt"
-$module=$null
-for($i=0;$i -lt 200 -and -not $p.HasExited;$i++) {
-    $p.Refresh()
-    $module=@($p.Modules | Where-Object ModuleName -eq 'winfsp-x64.dll')
-    if($module.Count -eq 1){break}
-    Start-Sleep -Milliseconds 100
-}
-if($module.Count -ne 1 -or $module[0].FileName -ine 'C:\lab\output\winfsp-x64.dll') {throw 'Candidate DLL not observed in native process'}
-$module[0] | Select-Object FileName,ModuleName,FileVersionInfo | ConvertTo-Json | Set-Content "C:\lab\loaded-dll-$Suite.json"
 if(-not $p.WaitForExit(1100000)){throw 'Native suite timed out'}
+if(@(Get-Content "C:\lab\native-$Suite.stderr.txt" | Where-Object {$_ -ceq 'WINFSP_TEST_DLL:C:\lab\output\winfsp-x64.dll'}).Count -ne 1) {throw 'Candidate DLL attestation missing'}
 $p.Refresh()
 $exitCode=$p.ExitCode
 if($null -eq $exitCode){throw 'Native process exit missing'}

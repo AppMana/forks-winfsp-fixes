@@ -257,6 +257,23 @@ int main(int argc, char *argv[])
 
     atexit(exiting);
     signal(SIGABRT, abort_handler);
+    /* Optional lab attestation must happen in-process, including fast tests. */
+    WCHAR ExpectedDll[MAX_PATH], ActualDll[MAX_PATH];
+    DWORD ExpectedLength = GetEnvironmentVariableW(L"WINFSP_TESTS_EXPECT_DLL",
+        ExpectedDll, MAX_PATH);
+    if (0 != ExpectedLength)
+    {
+        if (MAX_PATH <= ExpectedLength)
+            ABORT("expected DLL path too long");
+        WCHAR *BaseName = wcsrchr(ExpectedDll, L'\\');
+        HMODULE Module = GetModuleHandleW(BaseName ? BaseName + 1 : ExpectedDll);
+        DWORD ActualLength = GetModuleFileNameW(Module, ActualDll, MAX_PATH);
+        if (0 == Module || 0 == ActualLength || MAX_PATH <= ActualLength ||
+            0 != _wcsicmp(ExpectedDll, ActualDll))
+            ABORT("unexpected WinFsp DLL loaded");
+        fprintf(stderr, "WINFSP_TEST_DLL:%ls\n", ActualDll);
+        fflush(stderr);
+    }
 #pragma warning(suppress: 4996)
     if (0 == getenv("WINFSP_TESTS_EXCEPTION_FILTER_DISABLE"))
         SetUnhandledExceptionFilter(UnhandledExceptionHandler);

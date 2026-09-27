@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,7 @@ import (
 const ewdkSHA = "9f48251dd24ad31aac206d8256e95bda5f90a9783982c45a8aafeb9054562379"
 const msiSHA = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
 const helperRevision = "56e537c59dcb051ae6dba677a557db2483b6fefc"
+const helperSHA = "793bbca614dc48baadf3bbfdeb80073e8e673592456e4644380aeb469405e55f"
 const powershell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 
 func checkedFile(path, want string) error {
@@ -71,12 +73,17 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	image := os.Getenv("LABCONTAINERS_WINDOWS_IMAGE")
-	if !strings.HasSuffix(image, "-"+helperRevision[:7]) {
-		t.Fatal("Windows image must contain the matched 56e537c guest helper")
+	imageInfo, err := exec.Command("docker", "image", "inspect", image).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageID, err := matchedImage(imageInfo)
+	if err != nil {
+		t.Fatal(err)
 	}
 	labd := os.Getenv("LABCONTAINERS_LABD")
 	buildInfo, err := exec.Command("go", "version", "-m", labd).CombinedOutput()
-	if err != nil || !strings.Contains(string(buildInfo), "vcs.revision="+helperRevision) {
+	if err != nil || !strings.Contains(string(buildInfo), "vcs.revision="+helperRevision) || !strings.Contains(string(buildInfo), "vcs.modified=false") {
 		t.Fatalf("labd revision mismatch: %v\n%s", err, buildInfo)
 	}
 	parent := os.Getenv("RUNNER_TEMP")
@@ -108,6 +115,7 @@ func TestNativeWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("source.zip", source)
+	write("image-inspect.json", imageInfo)
 	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiSHA, image, helperRevision, buildInfo)))
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Minute)
 	defer cancel()
@@ -120,7 +128,7 @@ func TestNativeWindows(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	topo, err := clab.Source(topology(image, iso))
+	topo, err := clab.Source(topology(imageID, iso))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,14 +137,18 @@ func TestNativeWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := session.Node("vm")
-	ready := func() {
+	ready := func(afterReboot bool) {
 		t.Helper()
-		_, err := session.RunTimeline(ctx, &labv1.TimelineAction{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{Exec: &labv1.ExecRequest{Node: node.Ref(), Argv: []string{powershell, "-NoProfile", "-Command", "Write-Output 'ready-" + filepath.Base(out) + "'"}, TimeoutMillis: 10000}, TimeoutMillis: 600000, RetryMillis: 2000, StdoutContains: []byte("ready-" + filepath.Base(out))}}})
+		command := "Write-Output 'ready-" + filepath.Base(out) + "'"
+		if afterReboot {
+			command = `$ErrorActionPreference='Stop'; if((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc() -le [long](Get-Content C:\lab\pre-reboot.txt)){throw 'reboot not observed'}; ` + command
+		}
+		_, err := session.RunTimeline(ctx, &labv1.TimelineAction{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{Exec: &labv1.ExecRequest{Node: node.Ref(), Argv: []string{powershell, "-NoProfile", "-Command", command}, TimeoutMillis: 30000}, TimeoutMillis: 600000, RetryMillis: 2000, StdoutContains: []byte("ready-" + filepath.Base(out))}}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	ready()
+	ready(false)
 	defer func() {
 		collectCtx, stop := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer stop()
@@ -235,10 +247,13 @@ func TestNativeWindows(t *testing.T) {
 	run("build.ps1", "BUILD_COMPLETE", 35*time.Minute, buildArgs...)
 	t.Log("installing lab-signed candidate and rebooting isolated VM")
 	run("install.ps1", "INSTALL_COMPLETE", 5*time.Minute)
-	if err := node.Restart(ctx); err != nil {
-		t.Fatal(err)
+	// Installation needs a clean Windows reboot, not runtime container restart:
+	// the latter can cut power before NTFS flushes newly installed evidence.
+	r, err := node.ExecWithTimeout(ctx, time.Minute, `C:\Windows\System32\shutdown.exe`, "/r", "/t", "5")
+	if err != nil || r.GetExitCode() != 0 {
+		t.Fatalf("schedule guest reboot: %v %s", err, r.GetStderr())
 	}
-	ready()
+	ready(true)
 	suites := []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}
 	if baseline == "1" {
 		suites = []string{"regression"}
@@ -246,6 +261,32 @@ func TestNativeWindows(t *testing.T) {
 	for _, suite := range suites {
 		t.Log("upstream suite:", suite)
 		run("run.ps1", "SUITE_COMPLETE_"+suite, 20*time.Minute, "-Suite", suite)
+	}
+}
+
+func matchedImage(data []byte) (string, error) {
+	var images []struct {
+		ID     string `json:"Id"`
+		Config struct{ Labels map[string]string }
+	}
+	if err := json.Unmarshal(data, &images); err != nil {
+		return "", err
+	}
+	if len(images) != 1 || len(images[0].ID) != 71 || !strings.HasPrefix(images[0].ID, "sha256:") || images[0].Config.Labels["appmana.labcontainers.revision"] != helperRevision || images[0].Config.Labels["appmana.labcontainers.guest-helper-sha256"] != helperSHA {
+		return "", fmt.Errorf("image must contain the matched clean SDK guest helper")
+	}
+	return images[0].ID, nil
+}
+
+func TestImageRequiresMatchedHelper(t *testing.T) {
+	good := fmt.Sprintf(`[{"Id":"sha256:%s","Config":{"Labels":{"appmana.labcontainers.revision":"%s","appmana.labcontainers.guest-helper-sha256":"%s"}}}]`, strings.Repeat("a", 64), helperRevision, helperSHA)
+	if _, err := matchedImage([]byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"[]", strings.ReplaceAll(good, helperRevision, "old"), strings.ReplaceAll(good, helperSHA, "old"), strings.ReplaceAll(good, "sha256:", "mutable:")} {
+		if _, err := matchedImage([]byte(bad)); err == nil {
+			t.Fatal("unmatched image accepted")
+		}
 	}
 }
 
