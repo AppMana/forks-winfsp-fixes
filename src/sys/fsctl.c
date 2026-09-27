@@ -167,6 +167,9 @@ static UINT16 FspFsvolReparseTargetMountRoot(
     PFILE_OBJECT TargetFileObject;
     PDEVICE_OBJECT TargetDeviceObject;
     FSP_FILE_NODE *TargetFileNode;
+    OBJECT_ATTRIBUTES Attributes;
+    IO_STATUS_BLOCK IoStatus;
+    HANDLE Handle;
     NTSTATUS Status;
 
     if (DeviceEnd >= Count || L'\\' != Prefix.Buffer[DeviceEnd])
@@ -198,10 +201,22 @@ static UINT16 FspFsvolReparseTargetMountRoot(
         if (End == Count)
             break;
         Prefix.Length = Prefix.MaximumLength = (USHORT)(End * sizeof(WCHAR));
-        Status = IoGetDeviceObjectPointer(&Prefix, FILE_READ_ATTRIBUTES,
-            &TargetFileObject, &TargetDeviceObject);
+        /* These prefixes are directories, not device names. Open them as
+         * directories and follow junctions; IoGetDeviceObjectPointer is a
+         * device-open helper and is not the directory-open contract. */
+        InitializeObjectAttributes(&Attributes, &Prefix,
+            OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, 0, 0);
+        Status = ZwOpenFile(&Handle, FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            &Attributes, &IoStatus, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
         if (!NT_SUCCESS(Status))
             break;
+        Status = ObReferenceObjectByHandle(Handle, FILE_READ_ATTRIBUTES,
+            *IoFileObjectType, KernelMode, (PVOID *)&TargetFileObject, 0);
+        ZwClose(Handle);
+        if (!NT_SUCCESS(Status))
+            break;
+        TargetDeviceObject = IoGetRelatedDeviceObject(TargetFileObject);
         if (RelatedDeviceObject == TargetDeviceObject)
         {
             TargetFileNode = TargetFileObject->FsContext;

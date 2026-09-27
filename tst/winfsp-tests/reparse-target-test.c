@@ -3,6 +3,7 @@
 #include <winfsp/winfsp.h>
 #include <tlib/testsuite.h>
 #include <strsafe.h>
+#include <stdio.h>
 #include "memfs.h"
 #define WINFSP_TESTS_NO_HOOKS
 #include "winfsp-tests.h"
@@ -40,7 +41,11 @@ static void CheckReparseTarget(HANDLE Handle, PWSTR Target, LONG Expected)
     ASSERT(!DeviceIoControl(Handle, FSCTL_SET_REPARSE_POINT, &Data,
         REPARSE_DATA_BUFFER_HEADER_SIZE + Data.D.ReparseDataLength, 0, 0, &Bytes, 0));
     ASSERT(ERROR_ACCESS_DENIED == GetLastError());
-    ASSERT(Expected == InterlockedCompareExchange(&ObservedTarget, 0, 0));
+    LONG Observed = InterlockedCompareExchange(&ObservedTarget, 0, 0);
+    if (Expected != Observed)
+        fprintf(stderr, "REPARSE_TARGET target=%ls expected=%ld observed=%ld\n",
+            Target, Expected, Observed);
+    ASSERT(Expected == Observed);
 }
 
 void reparse_mount_target_test(void)
