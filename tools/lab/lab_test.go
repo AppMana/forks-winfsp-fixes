@@ -1,6 +1,8 @@
 package lab
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -101,7 +103,7 @@ func TestNativeWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision = strings.TrimSpace(string(resolved))
-	source, err := exec.Command("git", "archive", "--format=zip", revision).Output()
+	source, err := sourceArchive(revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +228,30 @@ func TestNativeWindows(t *testing.T) {
 	for _, suite := range []string{"full", "directory", "directory-sensitive", "mountmgr"} {
 		t.Log("upstream suite:", suite)
 		run("run.ps1", "SUITE_COMPLETE_"+suite, 20*time.Minute, "-Suite", suite)
+	}
+}
+
+func sourceArchive(revision string) ([]byte, error) {
+	// git archive is cwd-relative: the harness lives two levels below the
+	// application root. Never accidentally compile a tools-only archive.
+	return exec.Command("git", "-C", "../..", "archive", "--format=zip", revision).Output()
+}
+
+func TestSourceArchiveContainsCore(t *testing.T) {
+	b, err := sourceArchive("HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	z, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"src/sys/fsctl.c", "src/dll/fuse/fuse_intf.c", "build/VStudio/winfsp_sys.vcxproj", "tst/winfsp-tests/winfsp-tests.c"} {
+		f, err := z.Open(name)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		f.Close()
 	}
 }
 
