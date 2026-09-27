@@ -23,6 +23,7 @@
 #include <dbghelp.h>
 #include <lm.h>
 #include <signal.h>
+#include <stdio.h>
 #include <tlib/testsuite.h>
 #include <time.h>
 
