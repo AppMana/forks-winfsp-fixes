@@ -1,0 +1,36 @@
+name: native-lab
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: winfsp-native-lab
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: ${{ vars.WINFSP_LAB_RUNNER_LABELS != '' }}
+    runs-on: ${{ fromJSON(vars.WINFSP_LAB_RUNNER_LABELS) }}
+    timeout-minutes: 130
+    env:
+      GOWORK: 'off'
+      WINFSP_LAB_LIVE: '1'
+      WINFSP_LAB_EWDK_ISO: ${{ vars.WINFSP_LAB_EWDK_ISO }}
+      SEAWEEDFS_WINFSP_MSI: ${{ vars.WINFSP_LAB_MSI }}
+      LABCONTAINERS_LABD: ${{ vars.LABCONTAINERS_LABD }}
+      LABCONTAINERS_WINDOWS_IMAGE: ${{ vars.LABCONTAINERS_WINDOWS_IMAGE }}
+      RUNNER_TEMP: ${{ vars.WINFSP_LAB_RESULTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test evidence parser
+        run: pwsh -NoProfile -File tools/lab/evidence-test.ps1
+      - name: Real Windows VM qualification
+        working-directory: tools/lab
+        run: go test -v -count=1 -run '^Test(NativeWindows|TopologyIsolation)$' -timeout=120m
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: winfsp-native-evidence
+          path: ${{ vars.WINFSP_LAB_RESULTS }}/winfsp-native-*/
+          if-no-files-found: error

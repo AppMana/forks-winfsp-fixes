@@ -22,6 +22,58 @@
 
 <hr/>
 
+## AppMana qualification
+
+`appmana-v2.1` is based on upstream commit
+`ddca7bd5481857a65ba552f643b8776fd070836f`, matching the WinFsp 2.1 MSI
+currently bundled by AppMana's SeaweedFS CSI. Fork artifacts are **lab-only**
+until qualified and production-signed. The upstream installation instructions
+below refer to upstream releases, not this fork's experimental driver.
+
+Run the native Windows x64 suite in a fresh Labcontainers VM from a Linux/KVM
+host with Docker and Go 1.26.3 or later:
+
+```sh
+export WINFSP_LAB_LIVE=1
+export WINFSP_LAB_EWDK_ISO=/absolute/path/EWDK_ge_release_svc_prod1_26100_250904-1728.iso
+export SEAWEEDFS_WINFSP_MSI=/absolute/path/winfsp-2.1.25156.msi
+export LABCONTAINERS_LABD=/absolute/path/matched/labd
+export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:stale-read-56e537c
+export RUNNER_TEMP=/absolute/path/persistent-results
+cd tools/lab
+GOWORK=off go test -v -count=1 -run '^TestNativeWindows$' -timeout=120m
+```
+
+The SDK, daemon and image guest helper must all match
+`56e537c59dcb051ae6dba677a557db2483b6fefc`; do not use the old alpha.2 daemon.
+The EWDK and MSI hashes are enforced in `tools/lab/lab_test.go`. Build the
+daemon from that clean SDK checkout with `go build -o /absolute/path/labd ./cmd/labd`.
+The Windows image and `alpine:3.20` peer must already exist locally. Guests
+have no management network, WAN, published ports or Internet dependency;
+control is serial QGA. `WINFSP_LAB_REVISION` selects an exact source commit
+(default `HEAD`); uncommitted application changes are never compiled.
+
+The harness builds the SYS, DLL and upstream test executable, test-signs the
+driver in the disposable VM, explicitly registers it, reboots, verifies the
+driver/DLL identities, and checks complete native inventories. It retains
+source, hashes, binaries, compiler logs and test failures beneath `RUNNER_TEMP`.
+Native disk/network and directory-mount runs do not replace SeaweedFS Git/LFS,
+mixed-OS, crash-recovery or actual CSI pod qualification. The local-directory
+symlink fix does not change the network/UNC classifier, and exact mount-root
+targets without a trailing separator remain unsupported.
+
+The manual `native-lab` workflow uses repository variables
+`WINFSP_LAB_RUNNER_LABELS` (JSON array of isolated Linux/KVM runner labels),
+`WINFSP_LAB_EWDK_ISO`, `WINFSP_LAB_MSI`, `LABCONTAINERS_LABD`,
+`LABCONTAINERS_WINDOWS_IMAGE`, and `WINFSP_LAB_RESULTS` (persistent host paths).
+No signing secrets, cluster credentials or production routes belong on that
+runner. The workflow produces retained test artifacts, not releases or MSIs.
+
+For CSI deployment, package matching production-signed SYS/DLL files through
+the MSI build, pin its URL and SHA-256 in the mount image, and qualify host
+installation/upgrade/rollback after draining mounts. A DLL-only image update
+cannot deploy this kernel fix. Never enable test signing on cluster nodes.
+
 ## Overview
 
 WinFsp is a platform that provides development and runtime support for custom file systems on Windows computers. Typically any information or storage may be organized and presented as a file system via WinFsp, with the benefit being that the information can be accessed via the standand Windows file API’s by any Windows application.
