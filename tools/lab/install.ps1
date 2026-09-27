@@ -23,9 +23,11 @@ if ($p.ExitCode -notin @(0,3010)) { throw "MSI exit $($p.ExitCode)" }
 $p=Start-Process regsvr32.exe -ArgumentList '/s','C:\lab\output\winfsp-x64.dll' -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw 'Lab DLL registration failed' }
 $driver=Get-CimInstance Win32_SystemDriver -Filter "Name='WinFsp'"
-if (-not $driver -or $driver.PathName.Trim('"') -ine 'C:\lab\output\winfsp-x64.sys') {
-    throw "Unexpected driver registration: $($driver | ConvertTo-Json -Compress)"
+if (-not $driver -or $driver.State -ne 'Stopped' -or
+    $driver.PathName.Trim('"') -notin @('C:\lab\output\winfsp-x64.sys','\??\C:\lab\output\winfsp-x64.sys')) {
+    throw "Unexpected driver registration: $($driver | Select-Object Name,State,PathName | ConvertTo-Json -Compress)"
 }
+$driver | Select-Object Name,State,PathName | ConvertTo-Json | Set-Content C:\lab\registered-driver.json
 (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc() | Set-Content C:\lab\pre-reboot.txt
 Stop-Transcript
 Write-Output "INSTALL_COMPLETE:$Token"

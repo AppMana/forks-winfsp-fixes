@@ -52,6 +52,10 @@ The Windows image and `alpine:3.20` peer must already exist locally. Guests
 have no management network, WAN, published ports or Internet dependency;
 control is serial QGA. `WINFSP_LAB_REVISION` selects an exact source commit
 (default `HEAD`); uncommitted application changes are never compiled.
+Set `WINFSP_LAB_BASELINE_DRIVER=1` to compile the pinned unpatched upstream
+driver with the current DLL/test executable and run only the new native
+regression. That RED control is expected to fail; it is not a qualification
+pass or a test exclusion. Leave the variable unset for candidate qualification.
 
 The harness builds the SYS, DLL and upstream test executable, test-signs the
 driver in the disposable VM, explicitly registers it, reboots, verifies the

@@ -226,7 +226,7 @@ func TestNativeWindows(t *testing.T) {
 		argv := append([]string{powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", `C:\lab\` + script, "-Token", filepath.Base(out)}, args...)
 		r, e := node.ExecWithTimeout(ctx, timeout, argv...)
 		text := string(r.GetStdout()) + string(r.GetStderr())
-		write(script+"-command.txt", []byte(fmt.Sprintf("transport_error=%v\nexit=%d\n%s", e, r.GetExitCode(), text)))
+		write(script+"-"+marker+"-command.txt", []byte(fmt.Sprintf("transport_error=%v\nexit=%d\n%s", e, r.GetExitCode(), text)))
 		if e != nil || r.GetExitCode() != 0 || !strings.Contains(text, marker+":"+filepath.Base(out)) {
 			t.Fatalf("%s failed: %v exit=%d\n%s", script, e, r.GetExitCode(), text)
 		}

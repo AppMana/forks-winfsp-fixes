@@ -17,7 +17,7 @@ foreach($pair in @(@('winfsp-x64.sys','driver_sha256'),@('winfsp-x64.dll','dll_s
 if ($LASTEXITCODE -notin @(0,1056)) { throw 'Candidate driver could not start' }
 $drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object { $_.Name -like 'WinFsp*' -and $_.State -eq 'Running' })
 if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'WinFsp' -or
-    $drivers[0].PathName.Trim('"') -ine 'C:\lab\output\winfsp-x64.sys') { throw 'Wrong or additional WinFsp driver running' }
+    $drivers[0].PathName.Trim('"') -notin @('C:\lab\output\winfsp-x64.sys','\??\C:\lab\output\winfsp-x64.sys')) { throw 'Wrong or additional WinFsp driver running' }
 $drivers | ConvertTo-Json | Set-Content C:\lab\loaded-driver.json
 Set-Location C:\lab\output
 $arguments=switch($Suite) {
