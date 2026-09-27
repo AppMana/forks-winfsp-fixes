@@ -3,7 +3,9 @@ param([Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
       [ValidateSet('regression','full','directory','directory-sensitive','mountmgr')][string]$Suite='full')
 $ErrorActionPreference='Stop'
 . C:\lab\evidence.ps1
+. C:\lab\process.ps1
 Start-Transcript "C:\lab\suite-$Suite.txt"
+if([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18'){throw 'Qualification requires the fresh guest SYSTEM token'}
 if ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control').PSObject.Properties['ContainerType']) {
     throw 'Native VM required: upstream silently disables network tests in Windows containers'
 }
@@ -30,12 +32,10 @@ $arguments=switch($Suite) {
 & .\winfsp-tests-x64.exe --list @arguments > "C:\lab\inventory-$Suite.txt"
 if ($LASTEXITCODE -ne 0) { throw 'Native inventory failed' }
 $env:WINFSP_TESTS_EXPECT_DLL='C:\lab\output\winfsp-x64.dll'
-$p=Start-Process .\winfsp-tests-x64.exe -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput "C:\lab\native-$Suite.log" -RedirectStandardError "C:\lab\native-$Suite.stderr.txt"
-if(-not $p.WaitForExit(1100000)){throw 'Native suite timed out'}
+$exitCode=Invoke-NativeLabProcess 'C:\lab\output\winfsp-tests-x64.exe' $arguments "C:\lab\native-$Suite.log" "C:\lab\native-$Suite.stderr.txt"
 if(@(Get-Content "C:\lab\native-$Suite.stderr.txt" | Where-Object {$_ -ceq 'WINFSP_TEST_DLL:C:\lab\output\winfsp-x64.dll'}).Count -ne 1) {throw 'Candidate DLL attestation missing'}
-$p.Refresh()
-$exitCode=$p.ExitCode
 if($null -eq $exitCode){throw 'Native process exit missing'}
+if((Get-Content "C:\lab\native-$Suite.stderr.txt" -Raw) -match ': need (Administrator|SE_CREATE_SYMBOLIC_LINK_PRIVILEGE)'){throw 'Upstream test skipped a missing privilege'}
 Assert-NativeSuiteEvidence -Inventory @(Get-Content "C:\lab\inventory-$Suite.txt") -Output (Get-Content "C:\lab\native-$Suite.log" -Raw) -ExitCode $exitCode
 Stop-Transcript
 if ($exitCode -ne 0) { throw "Native suite $Suite failed ($exitCode); see retained log" }

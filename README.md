@@ -59,7 +59,10 @@ pass or a test exclusion. Leave the variable unset for candidate qualification.
 
 The harness builds the SYS, DLL and upstream test executable, test-signs the
 driver in the disposable VM, explicitly registers it, reboots, verifies the
-driver/DLL identities, and checks complete native inventories. It retains
+driver/DLL identities, and checks complete inventories for the selected x64
+internal disk/network, directory and mount-manager modes. This is not the
+entire upstream release matrix (x86/.NET, external/sample/compatibility and
+additional option-injection modes remain separate qualifications). It retains
 source, hashes, binaries, compiler logs and test failures beneath `RUNNER_TEMP`.
 Native disk/network and directory-mount runs do not replace SeaweedFS Git/LFS,
 mixed-OS, crash-recovery or actual CSI pod qualification. The local-directory

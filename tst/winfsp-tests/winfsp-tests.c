@@ -274,6 +274,7 @@ int main(int argc, char *argv[])
             ABORT("unexpected WinFsp DLL loaded");
         fprintf(stderr, "WINFSP_TEST_DLL:%ls\n", ActualDll);
         fflush(stderr);
+        FspDebugLogSetHandle(GetStdHandle(STD_ERROR_HANDLE));
     }
 #pragma warning(suppress: 4996)
     if (0 == getenv("WINFSP_TESTS_EXCEPTION_FILTER_DISABLE"))
