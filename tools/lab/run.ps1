@@ -29,10 +29,13 @@ $arguments=switch($Suite) {
     'directory-sensitive' { @('--mountpoint=C:\lab\native-mount','*','+ea*') }
     mountmgr { @('--mountpoint=\\.\C:\lab\native-mount','--resilient','*','+ea*','-exec*') }
 }
-& .\winfsp-tests-x64.exe --list @arguments > "C:\lab\inventory-$Suite.txt"
-if ($LASTEXITCODE -ne 0) { throw 'Native inventory failed' }
 $env:WINFSP_TESTS_EXPECT_DLL='C:\lab\output\winfsp-x64.dll'
+$inventoryArguments=@('--list')+@($arguments)
+$inventoryArguments | ConvertTo-Json | Set-Content "C:\lab\inventory-$Suite.arguments.json"
+$inventoryExit=Invoke-NativeLabProcess 'C:\lab\output\winfsp-tests-x64.exe' $inventoryArguments "C:\lab\inventory-$Suite.txt" "C:\lab\inventory-$Suite.stderr.txt"
+if ($inventoryExit -ne 0) { throw "Native inventory failed: $inventoryExit" }
 $exitCode=Invoke-NativeLabProcess 'C:\lab\output\winfsp-tests-x64.exe' $arguments "C:\lab\native-$Suite.log" "C:\lab\native-$Suite.stderr.txt"
+@{inventory_exit=$inventoryExit;test_exit=$exitCode;arguments=@($arguments)} | ConvertTo-Json | Set-Content "C:\lab\process-$Suite.json"
 if(@(Get-Content "C:\lab\native-$Suite.stderr.txt" | Where-Object {$_ -ceq 'WINFSP_TEST_DLL:C:\lab\output\winfsp-x64.dll'}).Count -ne 1) {throw 'Candidate DLL attestation missing'}
 if($null -eq $exitCode){throw 'Native process exit missing'}
 if((Get-Content "C:\lab\native-$Suite.stderr.txt" -Raw) -match ': need (Administrator|SE_CREATE_SYMBOLIC_LINK_PRIVILEGE)'){throw 'Upstream test skipped a missing privilege'}
