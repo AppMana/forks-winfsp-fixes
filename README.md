@@ -73,6 +73,8 @@ The manual `native-lab` workflow uses repository variables
 `WINFSP_LAB_RUNNER_LABELS` (JSON array of isolated Linux/KVM runner labels),
 `WINFSP_LAB_EWDK_ISO`, `WINFSP_LAB_MSI`, `LABCONTAINERS_LABD`,
 `LABCONTAINERS_WINDOWS_IMAGE`, and `WINFSP_LAB_RESULTS` (persistent host paths).
+Missing configuration fails the workflow rather than reporting a skipped lab
+as successful qualification.
 No signing secrets, cluster credentials or production routes belong on that
 runner. The workflow produces retained test artifacts, not releases or MSIs.
 

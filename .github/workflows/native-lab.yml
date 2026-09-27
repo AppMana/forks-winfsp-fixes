@@ -7,9 +7,24 @@ concurrency:
   group: winfsp-native-lab
   cancel-in-progress: false
 jobs:
+  configuration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an explicitly configured isolated lab
+        env:
+          LABELS: ${{ vars.WINFSP_LAB_RUNNER_LABELS }}
+          EWDK: ${{ vars.WINFSP_LAB_EWDK_ISO }}
+          MSI: ${{ vars.WINFSP_LAB_MSI }}
+          LABD: ${{ vars.LABCONTAINERS_LABD }}
+          IMAGE: ${{ vars.LABCONTAINERS_WINDOWS_IMAGE }}
+          RESULTS: ${{ vars.WINFSP_LAB_RESULTS }}
+        run: |
+          test -n "$LABELS" && test -n "$EWDK" && test -n "$MSI"
+          test -n "$LABD" && test -n "$IMAGE" && test -n "$RESULTS"
+          jq -en --argjson labels "$LABELS" '$labels | type == "array" and length > 0'
   qualify:
-    if: ${{ vars.WINFSP_LAB_RUNNER_LABELS != '' }}
-    runs-on: ${{ fromJSON(vars.WINFSP_LAB_RUNNER_LABELS) }}
+    needs: configuration
+    runs-on: ${{ fromJSON(vars.WINFSP_LAB_RUNNER_LABELS || '["self-hosted","winfsp-lab-unconfigured"]') }}
     timeout-minutes: 130
     env:
       GOWORK: 'off'
