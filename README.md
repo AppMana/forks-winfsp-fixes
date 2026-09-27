@@ -56,6 +56,10 @@ Set `WINFSP_LAB_BASELINE_DRIVER=1` to compile the pinned unpatched upstream
 driver with the current DLL/test executable and run only the new native
 regression. That RED control is expected to fail; it is not a qualification
 pass or a test exclusion. Leave the variable unset for candidate qualification.
+`WINFSP_LAB_BASELINE_REVISION` optionally selects another locally available
+full commit hash; its default is the v2.1 commit above, not a moving branch.
+The manual workflow exposes `baseline_driver` and the repository variable
+`WINFSP_LAB_BASELINE_REVISION` for the same deliberately failing control.
 
 The harness builds the SYS, DLL and upstream test executable, test-signs the
 driver in the disposable VM, explicitly registers it, reboots, verifies the

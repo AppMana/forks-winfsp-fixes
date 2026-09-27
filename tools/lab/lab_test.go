@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -227,7 +228,10 @@ func TestNativeWindows(t *testing.T) {
 		t.Fatal("WINFSP_LAB_BASELINE_DRIVER must be empty or 1")
 	}
 	if baseline == "1" {
-		const upstream = "ddca7bd5481857a65ba552f643b8776fd070836f"
+		upstream, err := baselineRevision(os.Getenv("WINFSP_LAB_BASELINE_REVISION"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		b, err := sourceArchive(upstream)
 		if err != nil {
 			t.Fatal(err)
@@ -275,6 +279,30 @@ func TestNativeWindows(t *testing.T) {
 	for _, suite := range suites {
 		t.Log("upstream suite:", suite)
 		run("run.ps1", "SUITE_COMPLETE_"+suite, 20*time.Minute, "-Suite", suite)
+	}
+}
+
+func baselineRevision(value string) (string, error) {
+	if value == "" {
+		return "ddca7bd5481857a65ba552f643b8776fd070836f", nil
+	}
+	if _, err := hex.DecodeString(value); err != nil || len(value) != 40 || strings.ToLower(value) != value {
+		return "", fmt.Errorf("WINFSP_LAB_BASELINE_REVISION must be a full lowercase commit hash")
+	}
+	return value, nil
+}
+
+func TestBaselineRequiresExactRevision(t *testing.T) {
+	if got, err := baselineRevision(""); err != nil || got != "ddca7bd5481857a65ba552f643b8776fd070836f" {
+		t.Fatalf("default baseline: %q %v", got, err)
+	}
+	if got, err := baselineRevision(strings.Repeat("a", 40)); err != nil || got != strings.Repeat("a", 40) {
+		t.Fatalf("explicit baseline: %q %v", got, err)
+	}
+	for _, bad := range []string{"HEAD", "deadbeef", strings.Repeat("z", 40), strings.Repeat("A", 40)} {
+		if _, err := baselineRevision(bad); err == nil {
+			t.Fatalf("accepted moving/malformed baseline %q", bad)
+		}
 	}
 }
 

@@ -1,6 +1,11 @@
 name: native-lab
 on:
   workflow_dispatch:
+    inputs:
+      baseline_driver:
+        description: Run the upstream-driver RED control (expected failure, not qualification)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -29,6 +34,8 @@ jobs:
     env:
       GOWORK: 'off'
       WINFSP_LAB_LIVE: '1'
+      WINFSP_LAB_BASELINE_DRIVER: ${{ inputs.baseline_driver && '1' || '' }}
+      WINFSP_LAB_BASELINE_REVISION: ${{ vars.WINFSP_LAB_BASELINE_REVISION }}
       WINFSP_LAB_EWDK_ISO: ${{ vars.WINFSP_LAB_EWDK_ISO }}
       SEAWEEDFS_WINFSP_MSI: ${{ vars.WINFSP_LAB_MSI }}
       LABCONTAINERS_LABD: ${{ vars.LABCONTAINERS_LABD }}
