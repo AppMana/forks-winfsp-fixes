@@ -195,6 +195,20 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	stage("source.zip", source)
+	buildArgs := []string{"-Revision", revision}
+	baseline := os.Getenv("WINFSP_LAB_BASELINE_DRIVER")
+	if baseline != "" && baseline != "1" {
+		t.Fatal("WINFSP_LAB_BASELINE_DRIVER must be empty or 1")
+	}
+	if baseline == "1" {
+		const upstream = "ddca7bd5481857a65ba552f643b8776fd070836f"
+		b, err := sourceArchive(upstream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage("driver-source.zip", b)
+		buildArgs = append(buildArgs, "-DriverRevision", upstream)
+	}
 	b, err := os.ReadFile(msi)
 	if err != nil {
 		t.Fatal(err)
@@ -218,14 +232,18 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	t.Log("building exact source with offline EWDK")
-	run("build.ps1", "BUILD_COMPLETE", 35*time.Minute, "-Revision", revision)
+	run("build.ps1", "BUILD_COMPLETE", 35*time.Minute, buildArgs...)
 	t.Log("installing lab-signed candidate and rebooting isolated VM")
 	run("install.ps1", "INSTALL_COMPLETE", 5*time.Minute)
 	if err := node.Restart(ctx); err != nil {
 		t.Fatal(err)
 	}
 	ready()
-	for _, suite := range []string{"full", "directory", "directory-sensitive", "mountmgr"} {
+	suites := []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}
+	if baseline == "1" {
+		suites = []string{"regression"}
+	} // An actual failing RED run, not a green exemption.
+	for _, suite := range suites {
 		t.Log("upstream suite:", suite)
 		run("run.ps1", "SUITE_COMPLETE_"+suite, 20*time.Minute, "-Suite", suite)
 	}

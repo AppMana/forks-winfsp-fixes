@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$Revision,
-    [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token
+    [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
+    [ValidatePattern('^[0-9a-f]{40}$')][string]$DriverRevision
 )
 $ErrorActionPreference = 'Stop'
 Start-Transcript C:\lab\build-transcript.txt
@@ -20,6 +21,12 @@ foreach ($line in $environment) {
 if ($env:BuildLab -ne 'ge_release_svc_prod1.26100.6584') { throw 'Unexpected EWDK version' }
 New-Item C:\lab\source -ItemType Directory | Out-Null
 Expand-Archive C:\lab\source.zip C:\lab\source
+$driverSource='C:\lab\source'
+if($DriverRevision) {
+    New-Item C:\lab\driver-source -ItemType Directory | Out-Null
+    Expand-Archive C:\lab\driver-source.zip C:\lab\driver-source
+    $driverSource='C:\lab\driver-source'
+} else { $DriverRevision=$Revision }
 $output = 'C:\lab\output'
 New-Item $output -ItemType Directory | Out-Null
 $msbuild = (Get-Command MSBuild.exe).Source
@@ -37,9 +44,11 @@ $common = @('/t:Build', '/m:1', '/nr:false', '/nologo', '/v:normal',
     '/p:SolutionDir=C:\lab\source\build\VStudio\', "/p:OutDir=$output\")
 foreach ($project in @('winfsp_sys', 'winfsp_dll', 'testing\winfsp-tests')) {
     $name = Split-Path $project -Leaf
-    $arguments = @("C:\lab\source\build\VStudio\$project.vcxproj") + $common +
+    $projectSource=if($project -eq 'winfsp_sys'){$driverSource}else{'C:\lab\source'}
+    $arguments = @("$projectSource\build\VStudio\$project.vcxproj") + $common +
         @("/p:IntDir=C:\lab\obj\$name\", "/bl:$output\$name.binlog")
     if ($project -ne 'winfsp_sys') { $arguments += '/p:PlatformToolset=v143' }
+    else { $arguments += "/p:MyGitRevision=$($DriverRevision.Substring(0,7))" }
     $arguments | ConvertTo-Json | Set-Content "$output\$name.arguments.json"
     & $msbuild @arguments *> "$output\$name.log"
     if ($LASTEXITCODE -ne 0) { throw "Build failed: $project (see retained log)" }
@@ -49,7 +58,7 @@ $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=AppMana Win
 Export-Certificate -Cert $cert -FilePath "$output\lab.cer" | Out-Null
 & $signer sign /fd SHA256 /s My /sha1 $cert.Thumbprint "$output\winfsp-x64.sys"
 if ($LASTEXITCODE -ne 0) { throw 'Lab signing failed' }
-@{source_revision=$Revision;source_archive_sha256=(Get-FileHash C:\lab\source.zip).Hash.ToLowerInvariant();
+@{source_revision=$Revision;driver_source_revision=$DriverRevision;source_archive_sha256=(Get-FileHash C:\lab\source.zip).Hash.ToLowerInvariant();
     build_script_sha256=(Get-FileHash $PSCommandPath).Hash.ToLowerInvariant();
     ewdk_build=$env:BuildLab;unsigned_driver_sha256=$unsigned;lab_only=$true;
     driver_sha256=(Get-FileHash "$output\winfsp-x64.sys").Hash.ToLowerInvariant();

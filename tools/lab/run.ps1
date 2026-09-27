@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
-      [ValidateSet('full','directory','directory-sensitive','mountmgr')][string]$Suite='full')
+      [ValidateSet('regression','full','directory','directory-sensitive','mountmgr')][string]$Suite='full')
 $ErrorActionPreference='Stop'
 . C:\lab\evidence.ps1
 Start-Transcript "C:\lab\suite-$Suite.txt"
@@ -21,6 +21,7 @@ if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'WinFsp' -or
 $drivers | ConvertTo-Json | Set-Content C:\lab\loaded-driver.json
 Set-Location C:\lab\output
 $arguments=switch($Suite) {
+    regression { @('reparse_mount_target_test') }
     full { @('+*') }
     directory { @('--mountpoint=C:\lab\native-mount','--case-insensitive','*','+ea*') }
     'directory-sensitive' { @('--mountpoint=C:\lab\native-mount','*','+ea*') }
