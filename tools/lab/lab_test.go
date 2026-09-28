@@ -64,6 +64,15 @@ func nativePlan(buildOnly, stockObserver string) (nativeLabPlan, error) {
 	}
 }
 
+func focusedSuite(value string) (string, error) {
+	switch value {
+	case "", "lock-noncached":
+		return value, nil
+	default:
+		return "", fmt.Errorf("WINFSP_LAB_FOCUSED_SUITE must be empty or lock-noncached")
+	}
+}
+
 func checkedFile(path, want string) error {
 	if !filepath.IsAbs(path) || strings.ContainsAny(path, ":\n\r") {
 		return fmt.Errorf("absolute host path required: %q", path)
@@ -103,6 +112,13 @@ func TestNativeWindows(t *testing.T) {
 		os.Getenv("WINFSP_LAB_STOCK_OBSERVER"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	focus, err := focusedSuite(os.Getenv("WINFSP_LAB_FOCUSED_SUITE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if focus != "" && (plan.buildOnly || plan.stockObserver) {
+		t.Fatal("focused suite cannot be combined with build-only or stock-observer mode")
 	}
 	iso, msi := os.Getenv("WINFSP_LAB_EWDK_ISO"), os.Getenv("SEAWEEDFS_WINFSP_MSI")
 	inputs := map[string]string{iso: ewdkSHA}
@@ -397,7 +413,9 @@ func TestNativeWindows(t *testing.T) {
 	}
 	ready(true)
 	suites := plan.suites
-	if baseline == "1" {
+	if focus != "" {
+		suites = []string{focus}
+	} else if baseline == "1" {
 		suites = []string{"regression"}
 	} // An actual failing RED run, not a green exemption.
 	for _, suite := range suites {
@@ -427,6 +445,19 @@ func TestNativeBuildOnlyPlanCannotInstallOrRun(t *testing.T) {
 	}
 	if _, err = nativePlan("1", "1"); err == nil {
 		t.Fatal("accepted conflicting isolated modes")
+	}
+}
+
+func TestFocusedSuiteIsClosedSet(t *testing.T) {
+	for _, good := range []string{"", "lock-noncached"} {
+		if got, err := focusedSuite(good); err != nil || got != good {
+			t.Fatalf("focused suite %q: %q %v", good, got, err)
+		}
+	}
+	for _, bad := range []string{"full", "lock*", "lock_noncached_test"} {
+		if _, err := focusedSuite(bad); err == nil {
+			t.Fatalf("accepted arbitrary focused suite %q", bad)
+		}
 	}
 }
 
