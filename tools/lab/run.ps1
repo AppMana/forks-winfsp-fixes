@@ -23,7 +23,7 @@ if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'WinFsp' -or
 $drivers | ConvertTo-Json | Set-Content C:\lab\loaded-driver.json
 Set-Location C:\lab\output
 $arguments=switch($Suite) {
-    regression { @('reparse_mount_target_test') }
+    regression { @('reparse_mount_target_test','reparse_net_projected_target_test') }
     full { @('+*') }
     directory { @('--mountpoint=C:\lab\native-mount','--case-insensitive','*','+ea*') }
     'directory-sensitive' { @('--mountpoint=C:\lab\native-mount','*','+ea*') }

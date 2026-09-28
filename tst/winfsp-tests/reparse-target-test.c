@@ -9,15 +9,17 @@
 #include "winfsp-tests.h"
 
 static volatile LONG ObservedTarget;
+static WCHAR ObservedFileName[MAX_PATH];
 
 static NTSTATUS ObserveReparseTarget(FSP_FILE_SYSTEM *FileSystem,
     PVOID FileContext, PWSTR FileName, PVOID Buffer, SIZE_T Size)
 {
     UNREFERENCED_PARAMETER(FileSystem);
     UNREFERENCED_PARAMETER(FileContext);
-    UNREFERENCED_PARAMETER(FileName);
     UNREFERENCED_PARAMETER(Buffer);
     UNREFERENCED_PARAMETER(Size);
+    StringCbCopyW(ObservedFileName, sizeof ObservedFileName,
+        0 != FileName ? FileName : L"<null>");
     InterlockedExchange(&ObservedTarget,
         FspFileSystemGetOperationContext()->Request->Req.FileSystemControl.TargetOnFileSystem);
     /* Observe the real kernel decision without installing a reparse point or
@@ -25,7 +27,8 @@ static NTSTATUS ObserveReparseTarget(FSP_FILE_SYSTEM *FileSystem,
     return STATUS_ACCESS_DENIED;
 }
 
-static void CheckReparseTarget(HANDLE Handle, PWSTR Target, LONG Expected)
+static void CheckReparseTarget(HANDLE Handle, PWSTR Target, LONG Expected,
+    PWSTR ExpectedFileName)
 {
     union { REPARSE_DATA_BUFFER D; UINT8 B[MAXIMUM_REPARSE_DATA_BUFFER_SIZE]; } Data = { 0 };
     USHORT Length = (USHORT)(wcslen(Target) * sizeof(WCHAR));
@@ -37,15 +40,17 @@ static void CheckReparseTarget(HANDLE Handle, PWSTR Target, LONG Expected)
     Data.D.SymbolicLinkReparseBuffer.PrintNameLength = Length;
     memcpy(Data.D.SymbolicLinkReparseBuffer.PathBuffer, Target, Length);
     memcpy((PUINT8)Data.D.SymbolicLinkReparseBuffer.PathBuffer + Length + sizeof(WCHAR), Target, Length);
+    ObservedFileName[0] = L'\0';
     InterlockedExchange(&ObservedTarget, -1);
     ASSERT(!DeviceIoControl(Handle, FSCTL_SET_REPARSE_POINT, &Data,
         REPARSE_DATA_BUFFER_HEADER_SIZE + Data.D.ReparseDataLength, 0, 0, &Bytes, 0));
     ASSERT(ERROR_ACCESS_DENIED == GetLastError());
     LONG Observed = InterlockedCompareExchange(&ObservedTarget, 0, 0);
-    if (Expected != Observed)
-        fprintf(stderr, "REPARSE_TARGET target=%ls expected=%ld observed=%ld\n",
-            Target, Expected, Observed);
+    fprintf(stderr,
+        "REPARSE_TARGET target=%ls expected=%ld observed=%ld file_name=%ls\n",
+        Target, Expected, Observed, ObservedFileName);
     ASSERT(Expected == Observed);
+    ASSERT(0 == wcscmp(ExpectedFileName, ObservedFileName));
 }
 
 void reparse_mount_target_test(void)
@@ -78,35 +83,37 @@ void reparse_mount_target_test(void)
     /* Every descendant is dangling. The classifier must stop at the proven
      * root, not require a leaf or strip away a nonexistent parent suffix. */
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\parent\\child\\missing", Mount);
-    CheckReparseTarget(Handle, Target, Boundary);
+    CheckReparseTarget(Handle, Target, Boundary, L"\\probe");
     CharLowerBuffW(Target, (DWORD)wcslen(Target));
-    CheckReparseTarget(Handle, Target, Boundary);
+    CheckReparseTarget(Handle, Target, Boundary, L"\\probe");
     StringCbPrintfW(Target, sizeof Target, L"%s\\missing", FileSystem->VolumeName);
-    CheckReparseTarget(Handle, Target, (LONG)(wcslen(FileSystem->VolumeName) * sizeof(WCHAR)));
+    CheckReparseTarget(Handle, Target,
+        (LONG)(wcslen(FileSystem->VolumeName) * sizeof(WCHAR)), L"\\probe");
 
     /* Raw FSCTL input bypasses Win32 normalization: reject traversal even
      * when its spelling starts with the genuine mounted root. */
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\..\\outside", Mount);
-    CheckReparseTarget(Handle, Target, 0);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\.\\missing", Mount);
-    CheckReparseTarget(Handle, Target, 0);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s", Mount);
-    CheckReparseTarget(Handle, Target, 0); /* exact-root limitation is explicit */
+    CheckReparseTarget(Handle, Target, 0, L"\\probe"); /* exact-root limitation is explicit */
     StringCbPrintfW(Collision, sizeof Collision, L"%s-other", Mount);
     ASSERT(CreateDirectoryW(Collision, 0));
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\missing", Collision);
-    CheckReparseTarget(Handle, Target, 0);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
     ASSERT(RemoveDirectoryW(Collision));
 
     StringCbPrintfW(Alias, sizeof Alias, L"%s-alias", Mount);
     ASSERT(CreateSymbolicLinkW(Alias, Mount, SYMBOLIC_LINK_FLAG_DIRECTORY));
     StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\missing", Alias);
-    CheckReparseTarget(Handle, Target, (LONG)((4 + wcslen(Alias)) * sizeof(WCHAR)));
+    CheckReparseTarget(Handle, Target,
+        (LONG)((4 + wcslen(Alias)) * sizeof(WCHAR)), L"\\probe");
     ASSERT(RemoveDirectoryW(Alias));
     StringCbPrintfW(Child, sizeof Child, L"%s\\child", Mount);
     ASSERT(CreateDirectoryW(Child, 0));
     ASSERT(CreateSymbolicLinkW(Alias, Child, SYMBOLIC_LINK_FLAG_DIRECTORY));
-    CheckReparseTarget(Handle, Target, 0); /* alias into a subdirectory is not a root */
+    CheckReparseTarget(Handle, Target, 0, L"\\probe"); /* alias into a subdirectory is not a root */
     ASSERT(RemoveDirectoryW(Alias));
     ASSERT(RemoveDirectoryW(Child));
     ASSERT(CloseHandle(Handle));
@@ -116,8 +123,75 @@ void reparse_mount_target_test(void)
     MemfsDelete(Memfs);
 }
 
+void reparse_net_projected_target_test(void)
+{
+    MEMFS *Memfs;
+    FSP_FILE_SYSTEM_INTERFACE Interface;
+    FSP_FILE_SYSTEM *FileSystem;
+    WCHAR Temp[MAX_PATH], Projection[MAX_PATH], ChildProjection[MAX_PATH];
+    WCHAR Link[MAX_PATH], Target[2 * MAX_PATH], External[MAX_PATH];
+    HANDLE Handle;
+    LONG Boundary;
+    DWORD TempLength = GetTempPathW(MAX_PATH, Temp);
+    ASSERT(0 < TempLength && MAX_PATH > TempLength);
+    ASSERT(GetTempFileNameW(Temp, L"fsp", 0, Projection));
+    ASSERT(DeleteFileW(Projection));
+    StringCbPrintfW(ChildProjection, sizeof ChildProjection, L"%s-child", Projection);
+    StringCbPrintfW(External, sizeof External, L"%s-external", Projection);
+
+    ASSERT(NT_SUCCESS(MemfsCreate(MemfsNet | MemfsCaseInsensitive, 0, 128,
+        1024 * 1024, L"\\memfs\\share", 0, &Memfs)));
+    FileSystem = MemfsFileSystem(Memfs);
+    Interface = *FileSystem->Interface;
+    Interface.SetReparsePoint = ObserveReparseTarget;
+    FileSystem->Interface = &Interface;
+    ASSERT(NT_SUCCESS(MemfsStart(Memfs)));
+    ASSERT(NT_SUCCESS(FspFsctlTransact(FileSystem->VolumeHandle, 0, 0, 0, 0, FALSE)));
+
+    /* Model a container projection: the user-visible path starts on C:, but
+     * following the directory boundary reaches the root of a network WinFsp
+     * filesystem. The callback name proves which WinFsp file node was used. */
+    ASSERT(CreateSymbolicLinkW(Projection, L"\\\\memfs\\share",
+        SYMBOLIC_LINK_FLAG_DIRECTORY));
+    StringCbPrintfW(Link, sizeof Link, L"%s\\probe", Projection);
+    Handle = CreateFileW(Link, FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, CREATE_NEW, 0, 0);
+    ASSERT(INVALID_HANDLE_VALUE != Handle);
+    Boundary = (LONG)((wcslen(L"\\??\\") + wcslen(Projection)) * sizeof(WCHAR));
+
+    StringCbPrintfW(Target, sizeof Target,
+        L"\\??\\%s\\parent\\child\\missing", Projection);
+    CheckReparseTarget(Handle, Target, Boundary, L"\\probe");
+
+    /* A spelling that escapes the projection, an unrelated local directory,
+     * and a projection into a WinFsp subdirectory must remain external. */
+    StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\..\\outside", Projection);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
+    ASSERT(CreateDirectoryW(External, 0));
+    StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\missing", External);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
+    ASSERT(RemoveDirectoryW(External));
+
+    ASSERT(CreateDirectoryW(L"\\\\memfs\\share\\child", 0));
+    ASSERT(CreateSymbolicLinkW(ChildProjection, L"\\\\memfs\\share\\child",
+        SYMBOLIC_LINK_FLAG_DIRECTORY));
+    StringCbPrintfW(Target, sizeof Target, L"\\??\\%s\\missing", ChildProjection);
+    CheckReparseTarget(Handle, Target, 0, L"\\probe");
+    ASSERT(RemoveDirectoryW(ChildProjection));
+    ASSERT(RemoveDirectoryW(L"\\\\memfs\\share\\child"));
+
+    ASSERT(CloseHandle(Handle));
+    ASSERT(0 == (GetFileAttributesW(Link) & FILE_ATTRIBUTE_REPARSE_POINT));
+    ASSERT(DeleteFileW(Link));
+    ASSERT(RemoveDirectoryW(Projection));
+    MemfsStop(Memfs);
+    MemfsDelete(Memfs);
+}
+
 void reparse_target_tests(void)
 {
     if (WinFspDiskTests && !OptExternal)
         TEST(reparse_mount_target_test);
+    if (WinFspNetTests && !OptExternal)
+        TEST(reparse_net_projected_target_test);
 }
