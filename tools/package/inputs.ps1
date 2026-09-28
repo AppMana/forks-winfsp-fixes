@@ -19,11 +19,26 @@ function Expand-CheckedArchive([string]$Zip,[string]$Destination) {
         foreach($entry in $archive.Entries) {
             Assert-ArchiveName $entry.FullName
             if(-not $seen.Add($entry.FullName.TrimEnd('/'))) {throw 'Duplicate archive path'}
-            # ZIP UNIX symlinks must not redirect subsequent extraction.
-            if((($entry.ExternalAttributes -shr 16) -band 0xf000) -eq 0xa000) {throw 'Archive symlink is forbidden'}
+        }
+        # Materialize bytes only, never UNIX symlinks or reparse points. The
+        # upstream git archive contains tools/build-choco.bat as a symlink;
+        # MSI assembly does not execute it. Treating it as inert text allows
+        # exact git archives without ever following archive-supplied links.
+        $null=[IO.Directory]::CreateDirectory($Destination)
+        foreach($entry in $archive.Entries) {
+            $path=Join-Path $Destination $entry.FullName
+            if($entry.FullName.EndsWith('/')) {
+                $null=[IO.Directory]::CreateDirectory($path)
+                continue
+            }
+            $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+            $from=$entry.Open()
+            try {
+                $to=[IO.File]::Open($path,[IO.FileMode]::CreateNew)
+                try {$from.CopyTo($to)} finally {$to.Dispose()}
+            } finally {$from.Dispose()}
         }
     } finally {$archive.Dispose()}
-    [IO.Compression.ZipFile]::ExtractToDirectory($Zip,$Destination)
 }
 function Assert-PeMachine([string]$Path,[int]$Machine) {
     $stream=[IO.File]::OpenRead($Path)

@@ -24,6 +24,18 @@ try {
     try { $null=$z.CreateEntry('file'); $null=$z.CreateEntry('FILE') } finally {$z.Dispose()}
     Reject {Expand-CheckedArchive $zip (Join-Path $root 'out')}
     if(Test-Path (Join-Path $root 'out')) {throw 'Unsafe archive partially extracted'}
+    $linkZip=Join-Path $root 'link.zip'
+    $z=[IO.Compression.ZipFile]::Open($linkZip,'Create')
+    try {
+        $entry=$z.CreateEntry('link'); $entry.ExternalAttributes=-1577123840
+        $stream=$entry.Open(); $writer=[IO.StreamWriter]::new($stream)
+        try {$writer.Write('../escaped')} finally {$writer.Dispose()}
+    } finally {$z.Dispose()}
+    $linkOut=Join-Path $root 'link-out'
+    Expand-CheckedArchive $linkZip $linkOut
+    $materialized=Get-Item (Join-Path $linkOut 'link')
+    if($materialized.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Archive symlink materialized'}
+    if([IO.File]::ReadAllText($materialized.FullName) -ne '../escaped'){throw 'Symlink bytes not preserved'}
     $pe=Join-Path $root 'fake.exe'
     $bytes=New-Object byte[] 256
     $bytes[0]=0x4d; $bytes[1]=0x5a; $bytes[60]=128
