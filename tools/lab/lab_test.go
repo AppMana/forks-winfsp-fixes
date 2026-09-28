@@ -31,6 +31,27 @@ const msiSHA = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a
 const helperRevision = "56e537c59dcb051ae6dba677a557db2483b6fefc"
 const helperSHA = "793bbca614dc48baadf3bbfdeb80073e8e673592456e4644380aeb469405e55f"
 const powershell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+const observerCacheSHA = "3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505062615a9fe"
+const observerCacheRevision = "b5c3c595c306a4b8d319e507bb80a6c0ac3007ad"
+
+type nativeLabPlan struct {
+	buildOnly bool
+	install   bool
+	reboot    bool
+	suites    []string
+}
+
+func nativePlan(value string) (nativeLabPlan, error) {
+	switch value {
+	case "":
+		return nativeLabPlan{install: true, reboot: true,
+			suites: []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}}, nil
+	case "1":
+		return nativeLabPlan{buildOnly: true}, nil
+	default:
+		return nativeLabPlan{}, fmt.Errorf("WINFSP_LAB_BUILD_ONLY must be empty or 1")
+	}
+}
 
 func checkedFile(path, want string) error {
 	if !filepath.IsAbs(path) || strings.ContainsAny(path, ":\n\r") {
@@ -67,9 +88,23 @@ func TestNativeWindows(t *testing.T) {
 	if os.Getenv("WINFSP_LAB_LIVE") != "1" {
 		t.Skip("set WINFSP_LAB_LIVE=1")
 	}
+	plan, err := nativePlan(os.Getenv("WINFSP_LAB_BUILD_ONLY"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	iso, msi := os.Getenv("WINFSP_LAB_EWDK_ISO"), os.Getenv("SEAWEEDFS_WINFSP_MSI")
-	for path, digest := range map[string]string{iso: ewdkSHA, msi: msiSHA} {
+	inputs := map[string]string{iso: ewdkSHA}
+	if !plan.buildOnly {
+		inputs[msi] = msiSHA
+	}
+	for path, digest := range inputs {
 		if err := checkedFile(path, digest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cachePath := os.Getenv("WINFSP_LAB_BUILD_CACHE")
+	if plan.buildOnly {
+		if err := checkedFile(cachePath, observerCacheSHA); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -121,7 +156,20 @@ func TestNativeWindows(t *testing.T) {
 	}
 	write("source.zip", source)
 	write("image-inspect.json", imageInfo)
-	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiSHA, image, helperRevision, buildInfo)))
+	if plan.buildOnly {
+		cmd := exec.Command("git", "diff", "--quiet", observerCacheRevision, revision, "--",
+			"src/dll", "inc", "ext", "tst/memfs",
+			"build/VStudio/build.common.props",
+			"build/VStudio/testing/winfsp-tests.vcxproj")
+		if err := cmd.Run(); err != nil {
+			t.Fatal("observer cache is incompatible with selected source revision:", err)
+		}
+	}
+	msiEvidence, cacheEvidence := msiSHA, "not-staged"
+	if plan.buildOnly {
+		msiEvidence, cacheEvidence = "not-staged", observerCacheSHA
+	}
+	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\nbuild_only=%t\ncache_sha256=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiEvidence, image, helperRevision, plan.buildOnly, cacheEvidence, buildInfo)))
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Minute)
 	defer cancel()
 	c, err := client.Launch(ctx, client.Options{LabdPath: labd})
@@ -222,34 +270,49 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	stage("source.zip", source)
+	if plan.buildOnly {
+		b, err := os.ReadFile(cachePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage("cached-output.zip", b)
+		b, err = os.ReadFile("build-test-only.ps1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage("build-test-only.ps1", b)
+	}
 	buildArgs := []string{"-Revision", revision}
-	baseline := os.Getenv("WINFSP_LAB_BASELINE_DRIVER")
-	if baseline != "" && baseline != "1" {
-		t.Fatal("WINFSP_LAB_BASELINE_DRIVER must be empty or 1")
-	}
-	if baseline == "1" {
-		upstream, err := baselineRevision(os.Getenv("WINFSP_LAB_BASELINE_REVISION"))
+	baseline := ""
+	if !plan.buildOnly {
+		baseline = os.Getenv("WINFSP_LAB_BASELINE_DRIVER")
+		if baseline != "" && baseline != "1" {
+			t.Fatal("WINFSP_LAB_BASELINE_DRIVER must be empty or 1")
+		}
+		if baseline == "1" {
+			upstream, err := baselineRevision(os.Getenv("WINFSP_LAB_BASELINE_REVISION"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := sourceArchive(upstream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage("driver-source.zip", b)
+			buildArgs = append(buildArgs, "-DriverRevision", upstream)
+		}
+		b, err := os.ReadFile(msi)
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := sourceArchive(upstream)
-		if err != nil {
-			t.Fatal(err)
+		stage("winfsp.msi", b)
+		for _, name := range []string{"build.ps1", "install.ps1", "run.ps1", "evidence.ps1", "process.ps1", "attest-dll.inc"} {
+			b, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage(name, b)
 		}
-		stage("driver-source.zip", b)
-		buildArgs = append(buildArgs, "-DriverRevision", upstream)
-	}
-	b, err := os.ReadFile(msi)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stage("winfsp.msi", b)
-	for _, name := range []string{"build.ps1", "install.ps1", "run.ps1", "evidence.ps1", "process.ps1", "attest-dll.inc"} {
-		b, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		stage(name, b)
 	}
 	run := func(script, marker string, timeout time.Duration, args ...string) {
 		t.Helper()
@@ -260,6 +323,12 @@ func TestNativeWindows(t *testing.T) {
 		if e != nil || r.GetExitCode() != 0 || !strings.Contains(text, marker+":"+filepath.Base(out)) {
 			t.Fatalf("%s failed: %v exit=%d\n%s", script, e, r.GetExitCode(), text)
 		}
+	}
+	if plan.buildOnly {
+		t.Log("building native observer only with attested compatible cache and offline EWDK")
+		run("build-test-only.ps1", "BUILD_TEST_ONLY_COMPLETE", 15*time.Minute,
+			"-Revision", revision)
+		return
 	}
 	t.Log("building exact source with offline EWDK")
 	run("build.ps1", "BUILD_COMPLETE", 35*time.Minute, buildArgs...)
@@ -272,13 +341,50 @@ func TestNativeWindows(t *testing.T) {
 		t.Fatalf("schedule guest reboot: %v %s", err, r.GetStderr())
 	}
 	ready(true)
-	suites := []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}
+	suites := plan.suites
 	if baseline == "1" {
 		suites = []string{"regression"}
 	} // An actual failing RED run, not a green exemption.
 	for _, suite := range suites {
 		t.Log("upstream suite:", suite)
 		run("run.ps1", "SUITE_COMPLETE_"+suite, 20*time.Minute, "-Suite", suite)
+	}
+}
+
+func TestNativeBuildOnlyPlanCannotInstallOrRun(t *testing.T) {
+	p, err := nativePlan("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.buildOnly || p.install || p.reboot || 0 != len(p.suites) {
+		t.Fatalf("unsafe build-only plan: %+v", p)
+	}
+	p, err = nativePlan("")
+	if err != nil || p.buildOnly || !p.install || !p.reboot || 0 == len(p.suites) {
+		t.Fatalf("invalid qualification plan: %+v %v", p, err)
+	}
+	if _, err = nativePlan("true"); err == nil {
+		t.Fatal("accepted ambiguous build-only value")
+	}
+}
+
+func TestNativeBuildOnlyScriptExcludesDriverLifecycle(t *testing.T) {
+	b, err := os.ReadFile("build-test-only.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	for _, required := range []string{"testing\\winfsp-tests.vcxproj", "driver_built=$false",
+		"driver_installed=$false", observerCacheRevision} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("build-only contract missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"winfsp_sys.vcxproj", "winfsp_dll.vcxproj",
+		"signtool.exe", "regsvr32.exe", "shutdown.exe", "run.ps1"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("build-only script contains lifecycle action %q", forbidden)
+		}
 	}
 }
 

@@ -44,6 +44,24 @@ cd tools/lab
 GOWORK=off go test -v -count=1 -run '^TestNativeWindows$' -timeout=120m
 ```
 
+To compile only the native observer/test executable in a fresh isolated VM,
+without building, signing, installing or starting a driver and without running
+any suite, add:
+
+```sh
+export WINFSP_LAB_BUILD_ONLY=1
+export WINFSP_LAB_BUILD_CACHE=/absolute/path/winfsp-native-1425103029/results.zip
+export WINFSP_LAB_REVISION=bddfe46d637facad01ac37ee49bc897f3afcf937
+```
+
+The cache ZIP is pinned to SHA-256
+`3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505062615a9fe`.
+The harness also proves that the selected revision has not changed the cached
+DLL/header, Memfs/tlib or test-project inputs. Its retained build-only manifest
+records the source, cache, EWDK, DLL, import-library and output executable
+hashes. A successful build is not a native RED/GREEN result; execute the
+binary against an explicitly attested driver in a separate qualification run.
+
 The SDK, daemon and image guest helper must all match
 `56e537c59dcb051ae6dba677a557db2483b6fefc`; do not use the old alpha.2 daemon.
 The EWDK and MSI hashes are enforced in `tools/lab/lab_test.go`. Build the
