@@ -5,6 +5,13 @@ function Reject([scriptblock]$Action) {
     try { & $Action } catch { $failed=$true }
     if(-not $failed){throw 'Invalid package input accepted'}
 }
+function New-TestLibrary([int]$Machine) {
+    $object=New-Object byte[] 20
+    $object[2]=255; $object[3]=255
+    $object[6]=$Machine -band 255; $object[7]=$Machine -shr 8
+    $header='object/'.PadRight(16)+(' '*32)+'20'.PadRight(10)+[char]96+"`n"
+    return ,([byte[]]([Text.Encoding]::ASCII.GetBytes("!<arch>`n"+$header)+$object))
+}
 $root=Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 New-Item $root -ItemType Directory | Out-Null
 try {
@@ -24,6 +31,13 @@ try {
     try { $null=$z.CreateEntry('file'); $null=$z.CreateEntry('FILE') } finally {$z.Dispose()}
     Reject {Expand-CheckedArchive $zip (Join-Path $root 'out')}
     if(Test-Path (Join-Path $root 'out')) {throw 'Unsafe archive partially extracted'}
+    foreach($order in @(@('a','a/b'),@('a/b','A'))) {
+        $collision=Join-Path $root ([guid]::NewGuid().ToString()+'.zip')
+        $z=[IO.Compression.ZipFile]::Open($collision,'Create')
+        try {foreach($name in $order){$null=$z.CreateEntry($name)}} finally {$z.Dispose()}
+        Reject {Expand-CheckedArchive $collision (Join-Path $root 'out')}
+        if(Test-Path (Join-Path $root 'out')) {throw 'Prefix collision partially extracted'}
+    }
     $linkZip=Join-Path $root 'link.zip'
     $z=[IO.Compression.ZipFile]::Open($linkZip,'Create')
     try {
@@ -56,6 +70,7 @@ try {
             $bytes[132]=$machine -band 255; $bytes[133]=$machine -shr 8
             $path=Join-Path $payload $name
             [IO.File]::WriteAllBytes($path,$bytes)
+            if($name.EndsWith('.lib')) {[IO.File]::WriteAllBytes($path,(New-TestLibrary $machine))}
             $files[$name]=(Get-FileHash $path).Hash.ToLowerInvariant()
         }
     }
@@ -65,19 +80,47 @@ try {
         [IO.File]::WriteAllBytes($path,$bytes)
         $files[$name]=(Get-FileHash $path).Hash.ToLowerInvariant()
     }
-    $manifest=@{schema=1;source_revision='a'*40;version='2.2.26271';files=$files}
+    $manifest=@{schema=1;source_revision='a'*40;source_archive_sha256='c'*64;version='2.2.26271';files=$files}
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
-    $null=Assert-PackagePayload $payload ('a'*40) '2.2.26271'
-    Reject {Assert-PackagePayload $payload ('b'*40) '2.2.26271'}
-    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26272'}
+    $null=Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)
+    Reject {Assert-PackagePayload $payload ('b'*40) '2.2.26271' ('c'*64)}
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26272' ('c'*64)}
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('d'*64)}
+    # Even updating the manifest hash must not disguise the wrong machine.
+    $library=Join-Path $payload 'winfsp-a64.lib'
+    [IO.File]::WriteAllBytes($library,(New-TestLibrary 0x8664))
+    $files['winfsp-a64.lib']=(Get-FileHash $library).Hash.ToLowerInvariant()
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
+    [IO.File]::WriteAllBytes($library,(New-TestLibrary 0xaa64))
+    $files['winfsp-a64.lib']=(Get-FileHash $library).Hash.ToLowerInvariant()
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
+    $null=Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)
     [IO.File]::WriteAllText((Join-Path $payload 'extra.dll'),'untracked')
-    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271'}
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
     Remove-Item (Join-Path $payload 'extra.dll')
     [IO.File]::WriteAllText((Join-Path $payload 'winfsp-x64.sys'),'tampered')
-    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271'}
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
     $files.Remove('winfsp-x64.sys')
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
-    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271'}
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
+    $repository=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    foreach($arch in @('x86','x64','a64')) {
+        Assert-CoffLibraryMachine (Join-Path $repository "opt/fsext/lib/winfsp-$arch.lib") (@{x86=0x14c;x64=0x8664;a64=0xaa64}[$arch])
+    }
+    $product=Join-Path $root 'Product.wxs'
+    Copy-Item (Join-Path $repository 'build/VStudio/installer/Product.wxs') $product
+    [xml]$before=Get-Content $product -Raw
+    Add-LabInstallerGuards $product
+    [xml]$after=Get-Content $product -Raw
+    foreach($id in @('APPMANA_LAB_ONLY','WIXFAILWHENDEFERRED','WixFailWhenDeferred')) {
+        if($after.SelectNodes("//*[@Id='$id']").Count -ne 1){throw "Missing or duplicate MSI guard: $id"}
+    }
+    $manager=[Xml.XmlNamespaceManager]::new($after.NameTable); $manager.AddNamespace('w','http://schemas.microsoft.com/wix/2006/wi')
+    if($after.SelectNodes('/w:Wix/w:Product/w:Condition[contains(text(),"APPMANA_LAB_ONLY")]', $manager).Count -ne 1){throw 'Launch condition absent'}
+    if($before.Wix.Product.UpgradeCode -cne $after.Wix.Product.UpgradeCode -or
+        $before.SelectNodes('//*[local-name()="File"]').Count -ne $after.SelectNodes('//*[local-name()="File"]').Count){throw 'Upstream package identity or payload changed'}
+    Reject {Add-LabInstallerGuards $product}
     $tokens=$null; $errors=$null
     $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'build-msi.ps1'),[ref]$tokens,[ref]$errors)
     if($errors.Count){throw ($errors | Out-String)}

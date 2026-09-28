@@ -19,3 +19,7 @@ jobs:
       - name: Reject unsafe and incomplete package inputs
         shell: pwsh
         run: ./tools/package/inputs-test.ps1
+      - name: Test with the Windows PowerShell used by the guest harness
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tools/package/inputs-test.ps1

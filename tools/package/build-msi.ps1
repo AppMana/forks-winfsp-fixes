@@ -9,6 +9,8 @@ param(
     [Parameter(Mandatory)][string]$PayloadSha256,
     [Parameter(Mandatory)][string]$WixZip,
     [Parameter(Mandatory)][string]$WixSha256,
+    [Parameter(Mandatory)][string]$MSBuildPath,
+    [Parameter(Mandatory)][string]$MSBuildSha256,
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][string]$OutputDirectory,
     [switch]$LabOnly
@@ -17,6 +19,7 @@ $ErrorActionPreference='Stop'
 . "$PSScriptRoot\inputs.ps1"
 if(-not $LabOnly){throw 'Production signing and qualification are not implemented; LabOnly is required'}
 if([Environment]::OSVersion.Platform -ne 'Win32NT'){throw 'WiX MSI assembly requires Windows'}
+Assert-PinnedFile $MSBuildPath $MSBuildSha256
 foreach($item in @(@($SourceZip,$SourceSha256),@($PayloadZip,$PayloadSha256),@($WixZip,$WixSha256))) {
     Assert-PinnedFile $item[0] $item[1]
 }
@@ -33,27 +36,16 @@ try {
     Expand-CheckedArchive $WixZip $wix
     $payload=Join-Path $source 'build/VStudio/build/Release'
     Expand-CheckedArchive $PayloadZip $payload
-    $manifest=Assert-PackagePayload $payload $Revision $Version
+    $manifest=Assert-PackagePayload $payload $Revision $Version $SourceSha256
+    foreach($arch in @('x86','x64','a64')) {
+        Assert-CoffLibraryMachine (Join-Path $source "opt/fsext/lib/winfsp-$arch.lib") (@{x86=0x14c;x64=0x8664;a64=0xaa64}[$arch])
+    }
     $installer=Join-Path $source 'build/VStudio/installer'
     # Preserve upstream feature/component/upgrade/service registration design.
     # Only the disposable staging copy receives lab guards and fault injection.
     $product=Join-Path $installer 'Product.wxs'
-    [xml]$xml=[IO.File]::ReadAllText($product)
-    $ns='http://schemas.microsoft.com/wix/2006/wi'
-    $condition=$xml.CreateElement('Condition',$ns)
-    $condition.SetAttribute('Message','AppMana lab package: isolated VM installation requires APPMANA_LAB_ONLY=1.')
-    $condition.InnerText='Installed OR APPMANA_LAB_ONLY = "1"'
-    $null=$xml.Wix.Product.AppendChild($condition)
-    $property=$xml.CreateElement('Property',$ns)
-    $property.SetAttribute('Id','APPMANA_LAB_ONLY'); $property.SetAttribute('Secure','yes')
-    $null=$xml.Wix.Product.AppendChild($property)
-    $fault=$xml.CreateElement('Property',$ns)
-    $fault.SetAttribute('Id','WIXFAILWHENDEFERRED'); $fault.SetAttribute('Value','0'); $fault.SetAttribute('Secure','yes')
-    $null=$xml.Wix.Product.AppendChild($fault)
-    $action=$xml.CreateElement('CustomActionRef',$ns); $action.SetAttribute('Id','WixFailWhenDeferred')
-    $null=$xml.Wix.Product.AppendChild($action)
-    $xml.Save($product)
-    $msbuild=(Get-Command MSBuild.exe -ErrorAction Stop).Source
+    Add-LabInstallerGuards $product
+    $msbuild=(Resolve-Path -LiteralPath $MSBuildPath).Path
     $buildArguments=@((Join-Path $installer 'winfsp_msi.wixproj'),'/t:Build','/m:1','/nr:false',
         '/p:Configuration=Release','/p:Platform=x86',"/p:SolutionDir=$source\build\VStudio\",
         "/p:WixTargetsPath=$wix\wix.targets","/p:WixToolPath=$wix\","/p:WixExtDir=$wix",
