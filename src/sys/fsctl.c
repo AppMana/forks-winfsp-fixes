@@ -397,11 +397,11 @@ static NTSTATUS FspFsvolFileSystemControlReparsePoint(
                     }
                 }
 
-                else if (0 == FsvolDeviceExtension->VolumePrefix.Length &&
-                    IoGetRelatedDeviceObject(FileObject) != TargetDeviceObject)
+                else if (IoGetRelatedDeviceObject(FileObject) != TargetDeviceObject)
                 {
-                    /* A local directory mount initially resolves to its host
-                     * disk. Prove the actual root rather than trusting text. */
+                    /* A local directory mount or projected network root
+                     * initially resolves to its host disk. Prove the actual
+                     * root rather than trusting text. */
                     TargetOnFileSystem = FspFsvolReparseTargetMountRoot(
                         FsvolDeviceObject, IoGetRelatedDeviceObject(FileObject),
                         &TargetObjectName, TargetFileNameIndex);
