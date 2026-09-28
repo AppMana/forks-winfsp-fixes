@@ -118,6 +118,13 @@ try {
     }
     $manager=[Xml.XmlNamespaceManager]::new($after.NameTable); $manager.AddNamespace('w','http://schemas.microsoft.com/wix/2006/wi')
     if($after.SelectNodes('/w:Wix/w:Product/w:Condition[contains(text(),"APPMANA_LAB_ONLY")]', $manager).Count -ne 1){throw 'Launch condition absent'}
+    $condition=$after.SelectSingleNode('/w:Wix/w:Product/w:Condition[contains(text(),"APPMANA_LAB_ONLY")]', $manager)
+    if($condition.InnerText -cne 'Installed OR APPMANA_LAB_ONLY = "1"'){throw 'Lab opt-in condition weakened'}
+    foreach($id in @('APPMANA_LAB_ONLY','WIXFAILWHENDEFERRED')) {
+        if($after.SelectSingleNode("//*[@Id='$id']").GetAttribute('Secure') -cne 'yes'){throw 'Installer property is not secure'}
+    }
+    if($after.SelectSingleNode("//*[@Id='WIXFAILWHENDEFERRED']").GetAttribute('Value') -cne '0'){throw 'Rollback fault enabled by default'}
+    if($after.SelectNodes('/w:Wix/w:Product/w:CustomActionRef[@Id="WixFailWhenDeferred"]',$manager).Count -ne 1){throw 'Rollback action reference absent'}
     if($before.Wix.Product.UpgradeCode -cne $after.Wix.Product.UpgradeCode -or
         $before.SelectNodes('//*[local-name()="File"]').Count -ne $after.SelectNodes('//*[local-name()="File"]').Count){throw 'Upstream package identity or payload changed'}
     Reject {Add-LabInstallerGuards $product}
