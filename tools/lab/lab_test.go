@@ -33,23 +33,34 @@ const helperSHA = "793bbca614dc48baadf3bbfdeb80073e8e673592456e4644380aeb469405e
 const powershell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 const observerCacheSHA = "3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505062615a9fe"
 const observerCacheRevision = "b5c3c595c306a4b8d319e507bb80a6c0ac3007ad"
+const observerResultsSHA = "a2bbdd45a8e1112a1ad6473ed5956fbabc599faf42a51569657478966e3633aa"
 
 type nativeLabPlan struct {
-	buildOnly bool
-	install   bool
-	reboot    bool
-	suites    []string
+	buildOnly     bool
+	stockObserver bool
+	install       bool
+	reboot        bool
+	suites        []string
 }
 
-func nativePlan(value string) (nativeLabPlan, error) {
-	switch value {
-	case "":
+func nativePlan(buildOnly, stockObserver string) (nativeLabPlan, error) {
+	if buildOnly != "" && buildOnly != "1" {
+		return nativeLabPlan{}, fmt.Errorf("WINFSP_LAB_BUILD_ONLY must be empty or 1")
+	}
+	if stockObserver != "" && stockObserver != "1" {
+		return nativeLabPlan{}, fmt.Errorf("WINFSP_LAB_STOCK_OBSERVER must be empty or 1")
+	}
+	if buildOnly == "1" && stockObserver == "1" {
+		return nativeLabPlan{}, fmt.Errorf("build-only and stock-observer modes are mutually exclusive")
+	}
+	switch {
+	case buildOnly == "1":
+		return nativeLabPlan{buildOnly: true}, nil
+	case stockObserver == "1":
+		return nativeLabPlan{stockObserver: true, install: true, reboot: true}, nil
+	default:
 		return nativeLabPlan{install: true, reboot: true,
 			suites: []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}}, nil
-	case "1":
-		return nativeLabPlan{buildOnly: true}, nil
-	default:
-		return nativeLabPlan{}, fmt.Errorf("WINFSP_LAB_BUILD_ONLY must be empty or 1")
 	}
 }
 
@@ -88,7 +99,8 @@ func TestNativeWindows(t *testing.T) {
 	if os.Getenv("WINFSP_LAB_LIVE") != "1" {
 		t.Skip("set WINFSP_LAB_LIVE=1")
 	}
-	plan, err := nativePlan(os.Getenv("WINFSP_LAB_BUILD_ONLY"))
+	plan, err := nativePlan(os.Getenv("WINFSP_LAB_BUILD_ONLY"),
+		os.Getenv("WINFSP_LAB_STOCK_OBSERVER"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +117,12 @@ func TestNativeWindows(t *testing.T) {
 	cachePath := os.Getenv("WINFSP_LAB_BUILD_CACHE")
 	if plan.buildOnly {
 		if err := checkedFile(cachePath, observerCacheSHA); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observerPath := os.Getenv("WINFSP_LAB_OBSERVER_RESULTS")
+	if plan.stockObserver {
+		if err := checkedFile(observerPath, observerResultsSHA); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -166,10 +184,14 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	msiEvidence, cacheEvidence := msiSHA, "not-staged"
+	observerEvidence := "not-staged"
 	if plan.buildOnly {
 		msiEvidence, cacheEvidence = "not-staged", observerCacheSHA
 	}
-	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\nbuild_only=%t\ncache_sha256=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiEvidence, image, helperRevision, plan.buildOnly, cacheEvidence, buildInfo)))
+	if plan.stockObserver {
+		observerEvidence = observerResultsSHA
+	}
+	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\nbuild_only=%t\nstock_observer=%t\ncache_sha256=%s\nobserver_results_sha256=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiEvidence, image, helperRevision, plan.buildOnly, plan.stockObserver, cacheEvidence, observerEvidence, buildInfo)))
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Minute)
 	defer cancel()
 	c, err := client.Launch(ctx, client.Options{LabdPath: labd})
@@ -282,9 +304,23 @@ func TestNativeWindows(t *testing.T) {
 		}
 		stage("build-test-only.ps1", b)
 	}
+	if plan.stockObserver {
+		b, err := os.ReadFile(observerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage("observer-results.zip", b)
+		for _, name := range []string{"stock-observer-install.ps1", "stock-observer-run.ps1", "process.ps1"} {
+			b, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage(name, b)
+		}
+	}
 	buildArgs := []string{"-Revision", revision}
 	baseline := ""
-	if !plan.buildOnly {
+	if !plan.buildOnly && !plan.stockObserver {
 		baseline = os.Getenv("WINFSP_LAB_BASELINE_DRIVER")
 		if baseline != "" && baseline != "1" {
 			t.Fatal("WINFSP_LAB_BASELINE_DRIVER must be empty or 1")
@@ -314,6 +350,13 @@ func TestNativeWindows(t *testing.T) {
 			stage(name, b)
 		}
 	}
+	if plan.stockObserver {
+		b, err := os.ReadFile(msi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stage("winfsp.msi", b)
+	}
 	run := func(script, marker string, timeout time.Duration, args ...string) {
 		t.Helper()
 		argv := append([]string{powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", `C:\lab\` + script, "-Token", filepath.Base(out)}, args...)
@@ -328,6 +371,18 @@ func TestNativeWindows(t *testing.T) {
 		t.Log("building native observer only with attested compatible cache and offline EWDK")
 		run("build-test-only.ps1", "BUILD_TEST_ONLY_COMPLETE", 15*time.Minute,
 			"-Revision", revision)
+		return
+	}
+	if plan.stockObserver {
+		t.Log("installing exact stock signed MSI in isolated VM")
+		run("stock-observer-install.ps1", "STOCK_OBSERVER_INSTALL_COMPLETE", 5*time.Minute)
+		r, err := node.ExecWithTimeout(ctx, time.Minute, `C:\Windows\System32\shutdown.exe`, "/r", "/t", "5")
+		if err != nil || r.GetExitCode() != 0 {
+			t.Fatalf("schedule stock guest reboot: %v %s", err, r.GetStderr())
+		}
+		ready(true)
+		t.Log("executing exact observer against stock signed driver")
+		run("stock-observer-run.ps1", "STOCK_OBSERVER_RED_CONFIRMED", 5*time.Minute)
 		return
 	}
 	t.Log("building exact source with offline EWDK")
@@ -352,19 +407,26 @@ func TestNativeWindows(t *testing.T) {
 }
 
 func TestNativeBuildOnlyPlanCannotInstallOrRun(t *testing.T) {
-	p, err := nativePlan("1")
+	p, err := nativePlan("1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !p.buildOnly || p.install || p.reboot || 0 != len(p.suites) {
 		t.Fatalf("unsafe build-only plan: %+v", p)
 	}
-	p, err = nativePlan("")
+	p, err = nativePlan("", "")
 	if err != nil || p.buildOnly || !p.install || !p.reboot || 0 == len(p.suites) {
 		t.Fatalf("invalid qualification plan: %+v %v", p, err)
 	}
-	if _, err = nativePlan("true"); err == nil {
+	if _, err = nativePlan("true", ""); err == nil {
 		t.Fatal("accepted ambiguous build-only value")
+	}
+	p, err = nativePlan("", "1")
+	if err != nil || p.buildOnly || !p.stockObserver || !p.install || !p.reboot || len(p.suites) != 0 {
+		t.Fatalf("unsafe stock-observer plan: %+v %v", p, err)
+	}
+	if _, err = nativePlan("1", "1"); err == nil {
+		t.Fatal("accepted conflicting isolated modes")
 	}
 }
 
@@ -384,6 +446,31 @@ func TestNativeBuildOnlyScriptExcludesDriverLifecycle(t *testing.T) {
 		"signtool.exe", "regsvr32.exe", "shutdown.exe", "run.ps1"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("build-only script contains lifecycle action %q", forbidden)
+		}
+	}
+}
+
+func TestStockObserverScriptsRequireSignedStockAndExactRed(t *testing.T) {
+	install, err := os.ReadFile("stock-observer-install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := os.ReadFile("stock-observer-run.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(install) + string(run)
+	for _, required := range []string{msiSHA, "Get-AuthenticodeSignature",
+		"5c6d29955c4f86bcd0aacf7e31a0957f2b8054828ff02911875517111f9baf0e",
+		"expected=[1-9][0-9]* observed=0 file_name=\\\\probe",
+		"STOCK_OBSERVER_RED_CONFIRMED"} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("stock observer contract missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"bcdedit.exe /set", "signtool.exe", "regsvr32.exe"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("stock observer script mutates signed driver policy via %q", forbidden)
 		}
 	}
 }

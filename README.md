@@ -62,6 +62,22 @@ records the source, cache, EWDK, DLL, import-library and output executable
 hashes. A successful build is not a native RED/GREEN result; execute the
 binary against an explicitly attested driver in a separate qualification run.
 
+To reproduce the network-filesystem projection failure against the exact stock
+signed 2.1.25156 MSI in another fresh isolated VM, use the retained build-only
+results archive and add:
+
+```sh
+export WINFSP_LAB_STOCK_OBSERVER=1
+export WINFSP_LAB_OBSERVER_RESULTS=/absolute/path/winfsp-native-2168257981/results.zip
+```
+
+This mode rejects test-signing, installs only the pinned stock MSI, reboots,
+attests the stock driver's path, Authenticode signer and hash, loads the
+observer DLL only from its separate unregistered directory, inventories one
+test, and succeeds only when that test produces the exact expected
+target-classification RED. It never treats an ordinary test pass or a failure
+before the observer callback as reproduction evidence.
+
 The SDK, daemon and image guest helper must all match
 `56e537c59dcb051ae6dba677a557db2483b6fefc`; do not use the old alpha.2 daemon.
 The EWDK and MSI hashes are enforced in `tools/lab/lab_test.go`. Build the
