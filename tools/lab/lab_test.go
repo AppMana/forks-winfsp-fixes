@@ -60,7 +60,7 @@ func nativePlan(buildOnly, stockObserver string) (nativeLabPlan, error) {
 		return nativeLabPlan{stockObserver: true, install: true, reboot: true}, nil
 	default:
 		return nativeLabPlan{install: true, reboot: true,
-			suites: []string{"regression", "full", "directory", "directory-sensitive", "mountmgr"}}, nil
+			suites: []string{"regression", "reparse", "full", "directory", "directory-sensitive", "mountmgr"}}, nil
 	}
 }
 

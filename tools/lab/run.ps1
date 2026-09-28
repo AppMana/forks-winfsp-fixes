@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
-      [ValidateSet('regression','full','directory','directory-sensitive','mountmgr')][string]$Suite='full')
+      [ValidateSet('regression','reparse','full','directory','directory-sensitive','mountmgr')][string]$Suite='full')
 $ErrorActionPreference='Stop'
 . C:\lab\evidence.ps1
 . C:\lab\process.ps1
@@ -24,6 +24,7 @@ $drivers | ConvertTo-Json | Set-Content C:\lab\loaded-driver.json
 Set-Location C:\lab\output
 $arguments=switch($Suite) {
     regression { @('reparse_mount_target_test','reparse_net_projected_target_test') }
+    reparse { @('reparse_*') }
     full { @('+*') }
     directory { @('--mountpoint=C:\lab\native-mount','--case-insensitive','*','+ea*') }
     'directory-sensitive' { @('--mountpoint=C:\lab\native-mount','*','+ea*') }
