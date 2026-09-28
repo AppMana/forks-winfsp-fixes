@@ -21,6 +21,16 @@ foreach ($line in $environment) {
 if ($env:BuildLab -ne 'ge_release_svc_prod1.26100.6584') { throw 'Unexpected EWDK version' }
 New-Item C:\lab\source -ItemType Directory | Out-Null
 Expand-Archive C:\lab\source.zip C:\lab\source
+# Keep build provenance separate from the minimal upstream test patch. This
+# observes the loaded DLL; it does not change test assertions or driver code.
+$entry='C:\lab\source\tst\winfsp-tests\winfsp-tests.c'
+$entryText=[IO.File]::ReadAllText($entry)
+$instrumented=-not $entryText.Contains('WINFSP_TEST_DLL:')
+if($instrumented) {
+    if(([regex]::Matches($entryText,'atexit\(exiting\);')).Count -ne 1) {throw 'Unknown native test entry point'}
+    $entryText="#include <stdio.h>`r`n"+$entryText.Replace('atexit(exiting);', 'atexit(exiting);'+"`r`n"+'#include "C:/lab/attest-dll.inc"')
+    [IO.File]::WriteAllText($entry,$entryText)
+}
 $driverSource='C:\lab\source'
 $driverArchive='C:\lab\source.zip'
 if($DriverRevision) {
@@ -64,6 +74,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Lab signing failed' }
     driver_source_archive_sha256=(Get-FileHash $driverArchive).Hash.ToLowerInvariant();
     build_script_sha256=(Get-FileHash $PSCommandPath).Hash.ToLowerInvariant();
     ewdk_build=$env:BuildLab;unsigned_driver_sha256=$unsigned;lab_only=$true;
+    lab_entrypoint_instrumented=$instrumented;test_entrypoint_sha256=(Get-FileHash $entry).Hash.ToLowerInvariant();
+    attestation_sha256=(Get-FileHash C:\lab\attest-dll.inc).Hash.ToLowerInvariant();
     driver_sha256=(Get-FileHash "$output\winfsp-x64.sys").Hash.ToLowerInvariant();
     dll_sha256=(Get-FileHash "$output\winfsp-x64.dll").Hash.ToLowerInvariant();
     test_sha256=(Get-FileHash "$output\winfsp-tests-x64.exe").Hash.ToLowerInvariant();

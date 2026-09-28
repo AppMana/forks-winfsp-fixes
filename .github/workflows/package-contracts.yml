@@ -1,0 +1,21 @@
+name: package-contracts
+on:
+  push:
+    paths: ['tools/package/**', '.github/workflows/package-contracts.yml']
+  pull_request:
+    paths: ['tools/package/**', '.github/workflows/package-contracts.yml']
+permissions:
+  contents: read
+jobs:
+  inputs:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reject unsafe and incomplete package inputs
+        shell: pwsh
+        run: ./tools/package/inputs-test.ps1
