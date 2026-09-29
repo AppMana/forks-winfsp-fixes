@@ -21,6 +21,43 @@
 
 #include <sys/driver.h>
 
+#if FSP_REPARSE_DIAGNOSTICS
+/* Enable only in isolated test-signed builds. Addresses are diagnostic data,
+ * not a public event contract. No foreign FsContext is dereferenced here. */
+static const GUID FspReparseDiagnosticProvider =
+    { 0x77769d82, 0x1374, 0x4d50, { 0xb8, 0xda, 0x56, 0x87, 0x15, 0xc1, 0xa8, 0x45 } };
+static REGHANDLE FspReparseDiagnosticHandle;
+
+NTSTATUS FspReparseDiagnosticInitialize(VOID)
+{
+    return EtwRegister(&FspReparseDiagnosticProvider, 0, 0, &FspReparseDiagnosticHandle);
+}
+
+VOID FspReparseDiagnosticFinalize(VOID)
+{
+    if (0 != FspReparseDiagnosticHandle)
+    {
+        EtwUnregister(FspReparseDiagnosticHandle);
+        FspReparseDiagnosticHandle = 0;
+    }
+}
+
+VOID FspReparseDiagnostic(PCWSTR Format, ...)
+{
+    WCHAR Buffer[512];
+    va_list Args;
+
+    if (0 == FspReparseDiagnosticHandle ||
+        !EtwProviderEnabled(FspReparseDiagnosticHandle, 4, 1))
+        return;
+    va_start(Args, Format);
+    NTSTATUS Status = RtlStringCchVPrintfW(Buffer, sizeof Buffer / sizeof Buffer[0], Format, Args);
+    va_end(Args);
+    if (NT_SUCCESS(Status))
+        EtwWriteString(FspReparseDiagnosticHandle, 4, 1, 0, Buffer);
+}
+#endif
+
 #if FSP_TRACE_ENABLED
 
 #undef STATUS_INSUFFICIENT_RESOURCES

@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$Revision,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
-    [ValidatePattern('^[0-9a-f]{40}$')][string]$DriverRevision
+    [ValidatePattern('^[0-9a-f]{40}$')][string]$DriverRevision,
+    [switch]$ReparseDiagnostics
 )
 $ErrorActionPreference = 'Stop'
 Start-Transcript C:\lab\build-transcript.txt
@@ -62,8 +63,14 @@ foreach ($project in @('winfsp_sys', 'winfsp_dll', 'testing\winfsp-tests')) {
     if ($project -ne 'winfsp_sys') { $arguments += '/p:PlatformToolset=v143' }
     else { $arguments += "/p:MyGitRevision=$($DriverRevision.Substring(0,7))" }
     $arguments | ConvertTo-Json | Set-Content "$output\$name.arguments.json"
-    & $msbuild @arguments *> "$output\$name.log"
-    if ($LASTEXITCODE -ne 0) { throw "Build failed: $project (see retained log)" }
+    $savedCL=$env:CL
+    try {
+        if ($ReparseDiagnostics -and $project -eq 'winfsp_sys') {
+            $env:CL="$savedCL /DFSP_REPARSE_DIAGNOSTICS=1"
+        }
+        & $msbuild @arguments *> "$output\$name.log"
+        if ($LASTEXITCODE -ne 0) { throw "Build failed: $project (see retained log)" }
+    } finally { $env:CL=$savedCL }
 }
 $unsigned = (Get-FileHash "$output\winfsp-x64.sys").Hash.ToLowerInvariant()
 $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=AppMana WinFsp LAB ONLY' -CertStoreLocation Cert:\CurrentUser\My
@@ -74,6 +81,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Lab signing failed' }
     driver_source_archive_sha256=(Get-FileHash $driverArchive).Hash.ToLowerInvariant();
     build_script_sha256=(Get-FileHash $PSCommandPath).Hash.ToLowerInvariant();
     ewdk_build=$env:BuildLab;unsigned_driver_sha256=$unsigned;lab_only=$true;
+    reparse_diagnostics=[bool]$ReparseDiagnostics;
     lab_entrypoint_instrumented=$instrumented;test_entrypoint_sha256=(Get-FileHash $entry).Hash.ToLowerInvariant();
     attestation_sha256=(Get-FileHash C:\lab\attest-dll.inc).Hash.ToLowerInvariant();
     driver_sha256=(Get-FileHash "$output\winfsp-x64.sys").Hash.ToLowerInvariant();

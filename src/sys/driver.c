@@ -138,6 +138,9 @@ NTSTATUS DriverEntry(
         InitDoneTimers = FALSE, InitDoneDevices = FALSE;
 
     FspDriverObject = DriverObject;
+    Result = FspReparseDiagnosticInitialize();
+    if (!NT_SUCCESS(Result))
+        goto exit;
     FspDriverMultiVersionInitialize();
 
     ExInitializeFastMutex(&FspDriverUnloadMutex);
@@ -181,6 +184,7 @@ exit:
         if (InitDoneSilo)
             FspSiloFinalize();
 
+        FspReparseDiagnosticFinalize();
         FSP_TRACE_FINI();
     }
 
@@ -202,6 +206,7 @@ VOID DriverUnload(
 
     FspSiloFinalize();
 
+    FspReparseDiagnosticFinalize();
     FSP_TRACE_FINI();
 
 #pragma prefast(suppress:28175, "We are in DriverUnload: ok to access DriverName")

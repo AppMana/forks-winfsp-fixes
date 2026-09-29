@@ -3,7 +3,7 @@ module github.com/AppMana/forks-winfsp-fixes/tools/lab
 go 1.26.3
 
 require (
-	github.com/appmana/labcontainers v0.2.0-alpha.2.0.20260923233400-56e537c59dcb
+	github.com/appmana/labcontainers v0.2.0-alpha.2.0.20260928211151-1e16650971a8
 	github.com/srl-labs/containerlab v0.79.0
 )
 

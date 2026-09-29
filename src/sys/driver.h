@@ -41,6 +41,17 @@
 
 #define DRIVER_NAME                     FSP_FSCTL_DRIVER_NAME
 
+/* Lab-only reparse diagnostics: absent from ordinary release builds. */
+#if FSP_REPARSE_DIAGNOSTICS
+NTSTATUS FspReparseDiagnosticInitialize(VOID);
+VOID FspReparseDiagnosticFinalize(VOID);
+VOID FspReparseDiagnostic(PCWSTR Format, ...);
+#else
+#define FspReparseDiagnosticInitialize() STATUS_SUCCESS
+#define FspReparseDiagnosticFinalize() ((void)0)
+#define FspReparseDiagnostic(...) ((void)0)
+#endif
+
 #if _WIN64
 #define FSP_REGKEY                      "\\Registry\\Machine\\Software\\WOW6432Node\\" FSP_FSCTL_PRODUCT_NAME
 #else

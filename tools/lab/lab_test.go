@@ -28,12 +28,22 @@ import (
 
 const ewdkSHA = "9f48251dd24ad31aac206d8256e95bda5f90a9783982c45a8aafeb9054562379"
 const msiSHA = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
-const helperRevision = "56e537c59dcb051ae6dba677a557db2483b6fefc"
-const helperSHA = "793bbca614dc48baadf3bbfdeb80073e8e673592456e4644380aeb469405e55f"
+const helperRevision = "1e16650971a8d0307e465e75fdc047606165bbe7"
+const helperSHA = "3712e30d5202228d164b7815a9d48452a72bbb48c74b99ade4c558f4aaf66f44"
 const powershell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 const observerCacheSHA = "3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505062615a9fe"
 const observerCacheRevision = "b5c3c595c306a4b8d319e507bb80a6c0ac3007ad"
 const observerResultsSHA = "a2bbdd45a8e1112a1ad6473ed5956fbabc599faf42a51569657478966e3633aa"
+
+func reparseDiagnosticMode(value string, conflictingMode bool) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	if value != "1" || conflictingMode {
+		return false, fmt.Errorf("WINFSP_LAB_REPARSE_DIAGNOSTIC_ARTIFACTS must be 1, with no other build/test mode")
+	}
+	return true, nil
+}
 
 func TestResignedManifestIsPortableJSON(t *testing.T) {
 	pwsh, err := exec.LookPath("pwsh")
@@ -161,6 +171,11 @@ func TestNativeWindows(t *testing.T) {
 	}
 	if focus != "" && (plan.buildOnly || plan.stockObserver) {
 		t.Fatal("focused suite cannot be combined with build-only or stock-observer mode")
+	}
+	diagnostic, err := reparseDiagnosticMode(os.Getenv("WINFSP_LAB_REPARSE_DIAGNOSTIC_ARTIFACTS"),
+		plan.buildOnly || plan.stockObserver || focus != "" || os.Getenv("WINFSP_LAB_BASELINE_DRIVER") != "")
+	if err != nil {
+		t.Fatal(err)
 	}
 	iso, msi := os.Getenv("WINFSP_LAB_EWDK_ISO"), os.Getenv("SEAWEEDFS_WINFSP_MSI")
 	inputs := map[string]string{iso: ewdkSHA}
@@ -377,6 +392,9 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	buildArgs := []string{"-Revision", revision}
+	if diagnostic {
+		buildArgs = append(buildArgs, "-ReparseDiagnostics")
+	}
 	baseline := ""
 	if !plan.buildOnly && !plan.stockObserver {
 		baseline = os.Getenv("WINFSP_LAB_BASELINE_DRIVER")
@@ -445,6 +463,10 @@ func TestNativeWindows(t *testing.T) {
 	}
 	t.Log("building exact source with offline EWDK")
 	run("build.ps1", "BUILD_COMPLETE", 35*time.Minute, buildArgs...)
+	if diagnostic {
+		t.Log("DIAGNOSTIC_ARTIFACTS_ONLY: built lab-only ETW candidate; no installation or filesystem qualification performed")
+		return
+	}
 	t.Log("installing lab-signed candidate and rebooting isolated VM")
 	run("install.ps1", "INSTALL_COMPLETE", 5*time.Minute)
 	// Installation needs a clean Windows reboot, not runtime container restart:

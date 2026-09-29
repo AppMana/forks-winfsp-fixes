@@ -209,6 +209,8 @@ static UINT16 FspFsvolReparseTargetMountRoot(
         Status = ZwOpenFile(&Handle, FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             &Attributes, &IoStatus, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT);
+        FspReparseDiagnostic(L"prefix-open fsvol=%p related=%p bytes=%u status=%08lx",
+            FsvolDeviceObject, RelatedDeviceObject, (unsigned)Prefix.Length, Status);
         if (!NT_SUCCESS(Status))
             break;
         Status = ObReferenceObjectByHandle(Handle, FILE_READ_ATTRIBUTES,
@@ -217,6 +219,10 @@ static UINT16 FspFsvolReparseTargetMountRoot(
         if (!NT_SUCCESS(Status))
             break;
         TargetDeviceObject = IoGetRelatedDeviceObject(TargetFileObject);
+        FspReparseDiagnostic(L"prefix-object fsvol=%p related=%p bytes=%u file=%p device=%p targetRelated=%p context=%p equal=%u",
+            FsvolDeviceObject, RelatedDeviceObject, (unsigned)Prefix.Length,
+            TargetFileObject, TargetFileObject->DeviceObject, TargetDeviceObject,
+            TargetFileObject->FsContext, (unsigned)(RelatedDeviceObject == TargetDeviceObject));
         if (RelatedDeviceObject == TargetDeviceObject)
         {
             TargetFileNode = TargetFileObject->FsContext;
@@ -226,6 +232,9 @@ static UINT16 FspFsvolReparseTargetMountRoot(
                 FsvolDeviceObject == TargetFileNode->FsvolDeviceObject &&
                 TargetFileNode->IsRootDirectory)
                 Result = Prefix.Length;
+            FspReparseDiagnostic(L"prefix-root fsvol=%p bytes=%u valid=%u result=%u",
+                FsvolDeviceObject, (unsigned)Prefix.Length,
+                (unsigned)FspFileNodeIsValid(TargetFileNode), (unsigned)Result);
             ObDereferenceObject(TargetFileObject);
             break;
         }
@@ -348,6 +357,9 @@ static NTSTATUS FspFsvolFileSystemControlReparsePoint(
                 /* get a pointer to the target device */
                 Result = FspGetDeviceObjectPointer(&TargetObjectName, FILE_READ_DATA,
                     &TargetFileNameIndex, &TargetFileObject, &TargetDeviceObject);
+                FspReparseDiagnostic(L"target-device fsvol=%p source=%p device=%p related=%p status=%08lx",
+                    FsvolDeviceObject, FileObject, FileObject->DeviceObject,
+                    IoGetRelatedDeviceObject(FileObject), Result);
                 if (!NT_SUCCESS(Result))
                     goto target_check_exit;
 
@@ -410,6 +422,8 @@ static NTSTATUS FspFsvolFileSystemControlReparsePoint(
                 ObDereferenceObject(TargetFileObject);
 
             target_check_exit:
+                FspReparseDiagnostic(L"target-result fsvol=%p source=%p status=%08lx targetOnFileSystem=%u",
+                    FsvolDeviceObject, FileObject, Result, (unsigned)TargetOnFileSystem);
                 ;
             }
         }
