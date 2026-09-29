@@ -267,7 +267,7 @@ func TestNativeWindows(t *testing.T) {
 	write("provenance.txt", []byte(fmt.Sprintf("revision=%s\nsource_sha256=%x\newdk_sha256=%s\nmsi_sha256=%s\nimage=%s\nhelper_revision=%s\nbuild_only=%t\nstock_observer=%t\ncache_sha256=%s\nobserver_results_sha256=%s\n%s", revision, sha256.Sum256(source), ewdkSHA, msiEvidence, image, helperRevision, plan.buildOnly, plan.stockObserver, cacheEvidence, observerEvidence, buildInfo)))
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Minute)
 	defer cancel()
-	c, err := client.Launch(ctx, client.Options{LabdPath: labd})
+	c, err := client.Launch(ctx, client.Options{LabdPath: labd, StateDir: filepath.Join(out, "state")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,6 +307,15 @@ func TestNativeWindows(t *testing.T) {
 		}
 	}
 	ready(false)
+	// Fresh offline Windows images can retain a local-time RTC interpretation.
+	// Provision the owned guest clock explicitly; the independent build-time
+	// preflight still rejects stale requests or clock drift before signing.
+	clockCommand := "$ErrorActionPreference='Stop'; Set-TimeZone -Id UTC; Set-Date -Date ([DateTimeOffset]::Parse('" + time.Now().UTC().Format(time.RFC3339) + "').UtcDateTime); [DateTimeOffset]::UtcNow.ToString('o')"
+	clockResult, clockErr := node.ExecWithTimeout(ctx, time.Minute, powershell, "-NoProfile", "-NonInteractive", "-Command", clockCommand)
+	write("guest-clock-initialization.txt", []byte(fmt.Sprintf("command=%s\nerror=%v\nexit=%d\n%s\n%s", clockCommand, clockErr, clockResult.GetExitCode(), clockResult.GetStdout(), clockResult.GetStderr())))
+	if clockErr != nil || clockResult.GetExitCode() != 0 {
+		t.Fatalf("initialize owned Windows guest clock: %v", clockErr)
+	}
 	defer func() {
 		collectCtx, stop := context.WithTimeout(context.Background(), 8*time.Minute)
 		defer stop()
