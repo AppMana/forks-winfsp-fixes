@@ -3,10 +3,13 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$Revision,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$Token,
+    [Parameter(Mandatory)][DateTimeOffset]$HostUtc,
     [ValidatePattern('^[0-9a-f]{40}$')][string]$DriverRevision,
     [switch]$ReparseDiagnostics
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\build-clock.ps1"
+Assert-LabBuildClock -HostUtc $HostUtc
 Start-Transcript C:\lab\build-transcript.txt
 $discs = @(Get-Volume | Where-Object DriveLetter | ForEach-Object { "$($_.DriveLetter):" } |
     Where-Object { Test-Path "$_\BuildEnv\SetupBuildEnv.cmd" })

@@ -418,7 +418,7 @@ func TestNativeWindows(t *testing.T) {
 			t.Fatal(err)
 		}
 		stage("winfsp.msi", b)
-		for _, name := range []string{"build.ps1", "install.ps1", "run.ps1", "evidence.ps1", "process.ps1", "attest-dll.inc"} {
+		for _, name := range []string{"build.ps1", "build-clock.ps1", "install.ps1", "run.ps1", "evidence.ps1", "process.ps1", "attest-dll.inc"} {
 			b, err := os.ReadFile(name)
 			if err != nil {
 				t.Fatal(err)
@@ -435,6 +435,9 @@ func TestNativeWindows(t *testing.T) {
 	}
 	run := func(script, marker string, timeout time.Duration, args ...string) {
 		t.Helper()
+		if script == "build.ps1" {
+			args = append(args, "-HostUtc", time.Now().UTC().Format(time.RFC3339))
+		}
 		argv := append([]string{powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", `C:\lab\` + script, "-Token", filepath.Base(out)}, args...)
 		r, e := node.ExecWithTimeout(ctx, timeout, argv...)
 		text := string(r.GetStdout()) + string(r.GetStderr())
