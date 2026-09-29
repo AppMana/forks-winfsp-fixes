@@ -171,6 +171,7 @@ static UINT16 FspFsvolReparseTargetMountRoot(
     IO_STATUS_BLOCK IoStatus;
     HANDLE Handle;
     NTSTATUS Status;
+    FSP_REPARSE_ROOT_IDENTITY Identity;
 
     if (DeviceEnd >= Count || L'\\' != Prefix.Buffer[DeviceEnd])
         return 0;
@@ -215,9 +216,11 @@ static UINT16 FspFsvolReparseTargetMountRoot(
             break;
         Status = ObReferenceObjectByHandle(Handle, FILE_READ_ATTRIBUTES,
             *IoFileObjectType, KernelMode, (PVOID *)&TargetFileObject, 0);
-        ZwClose(Handle);
         if (!NT_SUCCESS(Status))
+        {
+            ZwClose(Handle);
             break;
+        }
         TargetDeviceObject = IoGetRelatedDeviceObject(TargetFileObject);
         FspReparseDiagnostic(L"prefix-object fsvol=%p related=%p bytes=%u file=%p device=%p targetRelated=%p context=%p equal=%u",
             FsvolDeviceObject, RelatedDeviceObject, (unsigned)Prefix.Length,
@@ -236,9 +239,36 @@ static UINT16 FspFsvolReparseTargetMountRoot(
                 FsvolDeviceObject, (unsigned)Prefix.Length,
                 (unsigned)FspFileNodeIsValid(TargetFileNode), (unsigned)Result);
             ObDereferenceObject(TargetFileObject);
+            ZwClose(Handle);
             break;
         }
         ObDereferenceObject(TargetFileObject);
+
+        /* Container projections can wrap the file object with a different
+         * device and foreign FsContext. Ask the backing WinFsp dispatch path
+         * to identify its own root instead of interpreting that context. */
+        RtlZeroMemory(&Identity, sizeof Identity);
+        IoStatus.Information = 0;
+        Status = ZwFsControlFile(Handle, 0, 0, 0, &IoStatus,
+            FSP_FSCTL_REPARSE_ROOT_INTERNAL, 0, 0, &Identity, sizeof Identity);
+        if (STATUS_PENDING == Status)
+        {
+            Status = ZwWaitForSingleObject(Handle, FALSE, 0);
+            if (NT_SUCCESS(Status))
+                Status = IoStatus.Status;
+        }
+        ZwClose(Handle);
+        FspReparseDiagnostic(L"prefix-forwarded fsvol=%p bytes=%u status=%08lx targetFsvol=%p root=%u",
+            FsvolDeviceObject, (unsigned)Prefix.Length, Status,
+            Identity.FsvolDeviceObject, (unsigned)Identity.IsRootDirectory);
+        if (NT_SUCCESS(Status) && sizeof Identity == IoStatus.Information)
+        {
+            /* As with the direct-object path, stop at the first WinFsp
+             * boundary. An alias into a child must not lose its child path. */
+            if (FsvolDeviceObject == Identity.FsvolDeviceObject && Identity.IsRootDirectory)
+                Result = Prefix.Length;
+            break;
+        }
     }
     IoSetTopLevelIrp(TopLevelIrp);
     return Result;
@@ -842,6 +872,36 @@ static NTSTATUS FspFsvolFileSystemControl(
             Irp->IoStatus.Information = 0;
             Result = STATUS_SUCCESS;
             break;
+        case FSP_FSCTL_REPARSE_ROOT_INTERNAL:
+        {
+            Irp->IoStatus.Information = 0;
+            if (KernelMode != Irp->RequestorMode)
+            {
+                Result = STATUS_ACCESS_DENIED;
+                break;
+            }
+            if (0 != IrpSp->Parameters.FileSystemControl.InputBufferLength ||
+                sizeof(FSP_REPARSE_ROOT_IDENTITY) != IrpSp->Parameters.FileSystemControl.OutputBufferLength ||
+                0 == Irp->AssociatedIrp.SystemBuffer || 0 == IrpSp->FileObject ||
+                !FspFileNodeIsValid(IrpSp->FileObject->FsContext))
+            {
+                Result = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            FSP_FILE_NODE *FileNode = IrpSp->FileObject->FsContext;
+            FSP_REPARSE_ROOT_IDENTITY *Identity = Irp->AssociatedIrp.SystemBuffer;
+            RtlZeroMemory(Identity, sizeof *Identity);
+            if (FsvolDeviceObject != FileNode->FsvolDeviceObject)
+            {
+                Result = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            Identity->FsvolDeviceObject = FsvolDeviceObject;
+            Identity->IsRootDirectory = FileNode->IsRootDirectory;
+            Irp->IoStatus.Information = sizeof *Identity;
+            Result = STATUS_SUCCESS;
+            break;
+        }
         case FSCTL_GET_REPARSE_POINT:
             Result = FspFsvolFileSystemControlReparsePoint(FsvolDeviceObject, Irp, IrpSp, FALSE);
             break;

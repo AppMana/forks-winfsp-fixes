@@ -41,6 +41,15 @@
 
 #define DRIVER_NAME                     FSP_FSCTL_DRIVER_NAME
 
+/* Private kernel-only query: do not expose device pointers to user mode. */
+#define FSP_FSCTL_REPARSE_ROOT_INTERNAL \
+    CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 0x800 + 'R', METHOD_BUFFERED, FILE_ANY_ACCESS)
+typedef struct
+{
+    PDEVICE_OBJECT FsvolDeviceObject;
+    BOOLEAN IsRootDirectory;
+} FSP_REPARSE_ROOT_IDENTITY;
+
 /* Lab-only reparse diagnostics: absent from ordinary release builds. */
 #if FSP_REPARSE_DIAGNOSTICS
 NTSTATUS FspReparseDiagnosticInitialize(VOID);
