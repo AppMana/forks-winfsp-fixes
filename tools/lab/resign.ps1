@@ -41,6 +41,8 @@ $manifest | Add-Member -NotePropertyName resign_host_utc -NotePropertyValue $Hos
 $manifest | Add-Member -NotePropertyName resign_guest_utc -NotePropertyValue $now.ToString('o')
 $manifest.driver_sha256 = (Get-FileHash -Algorithm SHA256 $driver).Hash.ToLowerInvariant()
 $manifest.certificate_thumbprint = $cert.Thumbprint
-$manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'manifest.json') -Encoding UTF8
+# Windows PowerShell 5.1 Set-Content -Encoding UTF8 emits a BOM, which the
+# downstream Go JSON decoder correctly rejects. Emit portable UTF-8 bytes.
+[IO.File]::WriteAllText((Join-Path $OutputDirectory 'manifest.json'), ($manifest | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
 $manifest | ConvertTo-Json
 Write-Output 'LAB_RESIGN_COMPLETE'

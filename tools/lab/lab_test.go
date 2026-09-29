@@ -35,6 +35,48 @@ const observerCacheSHA = "3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505
 const observerCacheRevision = "b5c3c595c306a4b8d319e507bb80a6c0ac3007ad"
 const observerResultsSHA = "a2bbdd45a8e1112a1ad6473ed5956fbabc599faf42a51569657478966e3633aa"
 
+func TestResignedManifestIsPortableJSON(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		pwsh, err = exec.LookPath("powershell.exe")
+		if err != nil {
+			t.Skip("PowerShell required")
+		}
+	}
+	b, err := os.ReadFile("resign.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serializer []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "[IO.File]::WriteAllText") {
+			serializer = append(serializer, line)
+		}
+	}
+	if len(serializer) != 1 {
+		t.Fatal("expected one production manifest serializer")
+	}
+	dir := t.TempDir()
+	script := "$ErrorActionPreference='Stop';$OutputDirectory='" + strings.ReplaceAll(dir, "'", "''") + "';$manifest=@{lab_only=$true;label='caf\u00e9'};" + serializer[0]
+	if out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput(); err != nil {
+		t.Fatalf("serialize: %v %s", err, out)
+	}
+	b, err = os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		LabOnly bool   `json:"lab_only"`
+		Label   string `json:"label"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("not portable JSON: %v", err)
+	}
+	if !got.LabOnly || got.Label != "caf\u00e9" {
+		t.Fatalf("changed data: %+v", got)
+	}
+}
+
 type nativeLabPlan struct {
 	buildOnly     bool
 	stockObserver bool
