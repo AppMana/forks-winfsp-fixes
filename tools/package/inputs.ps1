@@ -22,19 +22,25 @@ function Assert-ArchiveName([string]$Name) {
             $part -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)') {throw "Unsafe archive component: $Name"}
     }
 }
-function Expand-CheckedArchive([string]$Zip,[string]$Destination) {
+function Expand-CheckedArchive([string]$Zip,[string]$Destination,[switch]$FlatOnly) {
     if(Test-Path -LiteralPath $Destination) {throw 'Extraction destination must not exist'}
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive=[IO.Compression.ZipFile]::OpenRead($Zip)
     try {
+        # Retained compiler outputs can include WDK staging trees whose ZIP
+        # names use Windows separators. Flat payload import never materializes
+        # these trees; its original manifest is validated separately by caller.
+        $entries=@($archive.Entries | Where-Object {
+            -not $FlatOnly -or $_.FullName.IndexOfAny([char[]]'/\') -lt 0
+        })
         $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach($entry in $archive.Entries) {
+        foreach($entry in $entries) {
             Assert-ArchiveName $entry.FullName
             if(-not $seen.Add($entry.FullName.TrimEnd('/'))) {throw 'Duplicate archive path'}
         }
         $leaves=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach($entry in $archive.Entries) {if(-not $entry.FullName.EndsWith('/')) {$null=$leaves.Add($entry.FullName)}}
-        foreach($entry in $archive.Entries) {
+        foreach($entry in $entries) {if(-not $entry.FullName.EndsWith('/')) {$null=$leaves.Add($entry.FullName)}}
+        foreach($entry in $entries) {
             $parts=$entry.FullName.TrimEnd('/').Split('/')
             for($i=1;$i -lt $parts.Count;$i++) {
                 if($leaves.Contains(($parts[0..($i-1)] -join '/'))) {throw 'Archive file/directory collision'}
@@ -45,7 +51,7 @@ function Expand-CheckedArchive([string]$Zip,[string]$Destination) {
         # MSI assembly does not execute it. Treating it as inert text allows
         # exact git archives without ever following archive-supplied links.
         $null=[IO.Directory]::CreateDirectory($Destination)
-        foreach($entry in $archive.Entries) {
+        foreach($entry in $entries) {
             $path=Join-Path $Destination $entry.FullName
             if($entry.FullName.EndsWith('/')) {
                 $null=[IO.Directory]::CreateDirectory($path)

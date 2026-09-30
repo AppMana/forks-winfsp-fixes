@@ -45,10 +45,8 @@ try {
     if($RetainedPayloadSha256) {
         # Only retry assembly. Never compile, restore, or resign retained bytes.
         Assert-PinnedFile C:\lab\retained-payload.zip $RetainedPayloadSha256
-        Expand-CheckedArchive C:\lab\retained-payload.zip "$root\retained"
         $payload="$root\installer-payload"
-        New-Item $payload -ItemType Directory | Out-Null
-        Copy-Item -LiteralPath @(Get-ChildItem "$root\retained" -File -Force | ForEach-Object FullName) -Destination $payload
+        Expand-CheckedArchive C:\lab\retained-payload.zip $payload -FlatOnly
         # Validate the ORIGINAL manifest; do not regenerate hashes over cached bytes.
         $null=Assert-PackagePayload $payload $Revision $version $SourceSha256
     } else {

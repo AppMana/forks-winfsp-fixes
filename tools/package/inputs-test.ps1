@@ -95,6 +95,15 @@ try {
     if(Test-Path (Join-Path $flat 'winfsp.sys')){throw 'WDK intermediate leaked into payload'}
     if(-not(Test-Path (Join-Path $wdk 'driver.inf'))){throw 'Original build outputs modified'}
     Reject {Export-PackagePayload $payload $flat ('a'*40) '2.2.26271' ('c'*64)}
+    $retainedZip=Join-Path $root 'retained.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($flat,$retainedZip)
+    $z=[IO.Compression.ZipFile]::Open($retainedZip,'Update')
+    try {$null=$z.CreateEntry('winfsp.sys\winfsp-a64.sys')} finally {$z.Dispose()}
+    Reject {Expand-CheckedArchive $retainedZip (Join-Path $root 'strict-retained')}
+    $retainedOut=Join-Path $root 'retained-flat'
+    Expand-CheckedArchive $retainedZip $retainedOut -FlatOnly
+    $null=Assert-PackagePayload $retainedOut ('a'*40) '2.2.26271' ('c'*64)
+    if((Get-FileHash (Join-Path $flat 'payload.json')).Hash -cne (Get-FileHash (Join-Path $retainedOut 'payload.json')).Hash){throw 'Retained manifest rewritten'}
     Remove-Item $wdk -Recurse
     Reject {Assert-PackagePayload $payload ('b'*40) '2.2.26271' ('c'*64)}
     Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26272' ('c'*64)}
