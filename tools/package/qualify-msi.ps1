@@ -60,10 +60,14 @@ try {
     } else {
         if((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc() -le [long](Get-Content C:\lab\pre-reboot.txt)){throw 'Reboot not observed'}
         Assert-InstalledPayload
-        & sc.exe start WinFsp
+        $registration=Get-ItemProperty HKLM:\SOFTWARE\WOW6432Node\WinFsp
+        if($registration.InstallDir.TrimEnd('\') -ine "${env:ProgramFiles(x86)}\WinFsp"){throw 'Unexpected installed product root'}
+        $identity=Get-MsiDriverIdentity $registration.InstallDir $registration.SxsDir
+        Assert-PinnedFile $identity.Path $manifest.payload.files.'winfsp-x64.sys'
+        & sc.exe start $identity.Name
         if($LASTEXITCODE -notin @(0,1056)){throw 'Installed driver could not start'}
         $drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {$_.Name -like 'WinFsp*' -and $_.State -eq 'Running'})
-        if($drivers.Count -ne 1 -or $drivers[0].Name -ne 'WinFsp' -or $drivers[0].PathName.Trim('"') -notin @("$bin\winfsp-x64.sys","\??\$bin\winfsp-x64.sys")){throw 'Wrong installed driver running'}
+        if($drivers.Count -ne 1 -or $drivers[0].Name -ne $identity.Name -or $drivers[0].PathName.Trim('"') -notin @($identity.Path,('\??\'+$identity.Path))){throw 'Wrong installed driver running'}
         $drivers | Select-Object Name,State,PathName | ConvertTo-Json | Set-Content "$out\installed-driver.json"
         foreach($arch in @('x64','x86')) {
             # Do not copy a candidate DLL beside the test: load the MSI-installed DLL.

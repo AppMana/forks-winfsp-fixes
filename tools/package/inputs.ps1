@@ -1,4 +1,13 @@
 Set-StrictMode -Version Latest
+function Get-MsiDriverIdentity([string]$InstallDirectory,[string]$SxsDirectory) {
+    # Product.wxs installs into SxS\sxs.[InstanceID]; src/dll/sxs.c derives
+    # the service suffix from that directory, not the logical bin junction.
+    $prefix=$InstallDirectory.TrimEnd('\')+'\SxS\sxs.'
+    if(-not $SxsDirectory.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'SxS directory is outside the installed product'}
+    $id=$SxsDirectory.Substring($prefix.Length).TrimEnd('\')
+    if($id -cnotmatch '^[0-9]{8}T[0-9]{6}Z$'){throw 'Invalid MSI instance identity'}
+    return [pscustomobject]@{Name='WinFsp+'+$id;Path=$prefix+$id+'\bin\winfsp-x64.sys'}
+}
 function Assert-DeferredRollbackEvidence([string]$Log) {
     if($Log -notmatch '\bCustomAction WixFailWhenDeferred returned actual error code 1603\b') {
         throw 'Deferred rollback fault execution not proved by installer log'
