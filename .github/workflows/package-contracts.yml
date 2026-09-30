@@ -1,12 +1,27 @@
 name: package-contracts
 on:
   push:
-    paths: ['tools/package/**', '.github/workflows/package-contracts.yml']
+    paths: ['tools/package/**', 'tools/lab/**', 'build/VStudio/installer/**', '.github/workflows/package-contracts.yml']
   pull_request:
-    paths: ['tools/package/**', '.github/workflows/package-contracts.yml']
+    paths: ['tools/package/**', 'tools/lab/**', 'build/VStudio/installer/**', '.github/workflows/package-contracts.yml']
 permissions:
   contents: read
 jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/lab/go.mod
+          cache-dependency-path: tools/lab/go.sum
+      - name: Check harness and cached-payload compatibility without starting VMs
+        working-directory: tools/lab
+        env:
+          GOWORK: 'off'
+        run: go test -race -count=1 ./...
   inputs:
     strategy:
       matrix:
