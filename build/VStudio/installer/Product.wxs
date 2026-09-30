@@ -19,6 +19,7 @@
             Compressed="yes"
             InstallScope="perMachine" />
         <MajorUpgrade
+            Schedule="afterInstallInitialize"
             Disallow="no"
             AllowDowngrades="no"
             AllowSameVersionUpgrades="yes"

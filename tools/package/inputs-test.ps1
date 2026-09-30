@@ -143,6 +143,7 @@ try {
     $product=Join-Path $root 'Product.wxs'
     Copy-Item (Join-Path $repository 'build/VStudio/installer/Product.wxs') $product
     [xml]$before=Get-Content $product -Raw
+    if($before.Wix.Product.MajorUpgrade.Schedule -cne 'afterInstallInitialize'){throw 'Upgrade removes old package outside the rollback transaction'}
     Add-LabInstallerGuards $product
     [xml]$after=Get-Content $product -Raw
     foreach($id in @('APPMANA_LAB_ONLY','WIXFAILWHENDEFERRED','WixFailWhenDeferred')) {
