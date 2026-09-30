@@ -6,11 +6,16 @@ param(
     [Parameter(Mandatory)][string]$InputsDirectory,
     [Parameter(Mandatory)][DateTimeOffset]$HostUtc,
     [Parameter(Mandatory)][string]$Token,
-    [ValidatePattern('^[0-9a-f]{64}$')][string]$RetainedPayloadSha256
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$RetainedPayloadSha256,
+    [ValidatePattern('^[0-9a-f]{40}$')][string]$PayloadRevision,
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$PayloadSourceSha256
 )
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot\inputs.ps1"
 . "$PSScriptRoot\build-clock.ps1"
+if(-not $PayloadRevision){$PayloadRevision=$Revision}
+if(-not $PayloadSourceSha256){$PayloadSourceSha256=$SourceSha256}
+if(-not $RetainedPayloadSha256 -and ($PayloadRevision -cne $Revision -or $PayloadSourceSha256 -cne $SourceSha256)){throw 'Fresh compilation must use the selected source'}
 Assert-LabBuildClock -HostUtc $HostUtc
 Assert-PinnedFile C:\lab\source.zip $SourceSha256
 $pins=Get-Content (Join-Path $InputsDirectory 'inputs.json') -Raw | ConvertFrom-Json
@@ -48,7 +53,7 @@ try {
         $payload="$root\installer-payload"
         Expand-CheckedArchive C:\lab\retained-payload.zip $payload -FlatOnly
         # Validate the ORIGINAL manifest; do not regenerate hashes over cached bytes.
-        $null=Assert-PackagePayload $payload $Revision $version $SourceSha256
+        $null=Assert-PackagePayload $payload $PayloadRevision $version $PayloadSourceSha256
     } else {
     Expand-CheckedArchive C:\lab\source.zip "$root\source"
     Expand-CheckedArchive (Join-Path $InputsDirectory 'wix314-binaries.zip') "$root\wix"
@@ -122,7 +127,7 @@ try {
         -PayloadZip "$output\payload.zip" -PayloadSha256 (Get-FileHash "$output\payload.zip").Hash.ToLowerInvariant() `
         -WixZip (Join-Path $InputsDirectory 'wix314-binaries.zip') -WixSha256 $pins.files.'wix314-binaries.zip' `
         -MSBuildPath $msbuild -MSBuildSha256 (Get-FileHash $msbuild).Hash.ToLowerInvariant() `
-        -Version $version -OutputDirectory "$root\assembled" -LabOnly
+        -Version $version -OutputDirectory "$root\assembled" -LabOnly -PayloadRevision $PayloadRevision -PayloadSourceSha256 $PayloadSourceSha256
     Copy-Item "$root\assembled\*.msi","$root\assembled\package-manifest.json","$root\assembled\package.log" $output
     @{lab_only=$true;production_qualified=$false;certificate_thumbprint=$certificateThumbprint;
       retained_payload_sha256=$RetainedPayloadSha256;
@@ -135,7 +140,7 @@ try {
     if($payload -and (Test-Path $payload) -and -not(Test-Path "$output\payload.zip")) {
         try {
             Compress-Archive -Path "$payload\*" -DestinationPath "$output\partial-payload.zip"
-            @{complete=$false;source_revision=$Revision;source_archive_sha256=$SourceSha256;
+            @{complete=$false;source_revision=$PayloadRevision;source_archive_sha256=$PayloadSourceSha256;
               archive_sha256=(Get-FileHash "$output\partial-payload.zip").Hash.ToLowerInvariant()} |
                 ConvertTo-Json | Set-Content "$output\partial-payload.json"
         } catch {Write-Warning "Partial payload retention failed: $_"}

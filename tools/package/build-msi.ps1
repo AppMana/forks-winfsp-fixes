@@ -13,10 +13,14 @@ param(
     [Parameter(Mandatory)][string]$MSBuildSha256,
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [switch]$LabOnly
+    [switch]$LabOnly,
+    [string]$PayloadRevision,
+    [string]$PayloadSourceSha256
 )
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot\inputs.ps1"
+if(-not $PayloadRevision){$PayloadRevision=$Revision}
+if(-not $PayloadSourceSha256){$PayloadSourceSha256=$SourceSha256}
 if(-not $LabOnly){throw 'Production signing and qualification are not implemented; LabOnly is required'}
 if([Environment]::OSVersion.Platform -ne 'Win32NT'){throw 'WiX MSI assembly requires Windows'}
 Assert-PinnedFile $MSBuildPath $MSBuildSha256
@@ -36,7 +40,7 @@ try {
     Expand-CheckedArchive $WixZip $wix
     $payload=Join-Path $source 'build/VStudio/build/Release'
     Expand-CheckedArchive $PayloadZip $payload
-    $manifest=Assert-PackagePayload $payload $Revision $Version $SourceSha256
+    $manifest=Assert-PackagePayload $payload $PayloadRevision $Version $PayloadSourceSha256
     foreach($arch in @('x86','x64','a64')) {
         Assert-CoffLibraryMachine (Join-Path $source "opt/fsext/lib/winfsp-$arch.lib") (@{x86=0x14c;x64=0x8664;a64=0xaa64}[$arch])
     }

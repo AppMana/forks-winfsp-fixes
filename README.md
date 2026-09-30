@@ -170,6 +170,11 @@ payload manifest, file hashes, source identity and architectures before assembly
 an incomplete or mismatched archive fails. WDK intermediate directories are not
 installer inputs. Preserve the original `lab.cer` alongside the retained payload;
 assembly does not create a replacement signing certificate.
+For an installer-only source fix, set `WINFSP_PACKAGE_REVISION` to the new
+packaging commit and `WINFSP_PACKAGE_PAYLOAD_REVISION` to the original compiled
+commit. Reuse is rejected if native sources, headers, project/compiler settings,
+tests or bundled libraries changed. The retained manifest keeps its original
+identity; the installer manifest separately records the new packaging source.
 
 To exercise MSI upgrade/rollback and the installed native files in that same VM,
 also set `WINFSP_PACKAGE_QUALIFY=1` and `SEAWEEDFS_WINFSP_MSI` to the pinned stock

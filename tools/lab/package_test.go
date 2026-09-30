@@ -20,6 +20,28 @@ import (
 )
 
 // This builds a lab-only installer. It neither installs it nor qualifies it.
+func checkPackagingOnlyChanges(diff string) error {
+	for _, path := range strings.Split(strings.TrimSpace(diff), "\n") {
+		if path == "" || path == "README.md" || path == "build/VStudio/installer/Product.wxs" ||
+			strings.HasPrefix(path, "tools/lab/") || strings.HasPrefix(path, "tools/package/") || strings.HasPrefix(path, ".github/") {
+			continue
+		}
+		return fmt.Errorf("retained payload cannot be reused after source change: %s", path)
+	}
+	return nil
+}
+
+func TestRetainedPayloadRejectsNativeSourceChanges(t *testing.T) {
+	if err := checkPackagingOnlyChanges("build/VStudio/installer/Product.wxs\ntools/package/build-msi.ps1\nREADME.md\n"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"src/sys/fsctl.c", "src/dll/fs.c", "inc/winfsp/winfsp.h", "build/VStudio/build.version.props", "build/VStudio/installer/CustomActions/CustomActions.cpp", "tst/winfsp-tests/reparse.c", "opt/fsext/lib/winfsp-x64.lib"} {
+		if checkPackagingOnlyChanges(path) == nil {
+			t.Fatal("accepted stale binaries after", path)
+		}
+	}
+}
+
 func TestOfflinePackageBuild(t *testing.T) {
 	if os.Getenv("WINFSP_PACKAGE_LIVE") != "1" {
 		t.Skip("set WINFSP_PACKAGE_LIVE=1")
@@ -99,6 +121,30 @@ func TestOfflinePackageBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("source.zip", source)
+	payloadRevision := revision
+	payloadSource := source
+	if ref := os.Getenv("WINFSP_PACKAGE_PAYLOAD_REVISION"); ref != "" {
+		if os.Getenv("WINFSP_PACKAGE_RETAINED_PAYLOAD") == "" {
+			t.Fatal("payload revision override requires retained payload")
+		}
+		b, err := exec.Command("git", "rev-parse", "--verify", ref+"^{commit}").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloadRevision = strings.TrimSpace(string(b))
+		diff, err := exec.Command("git", "diff", "--name-only", payloadRevision, revision, "--").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkPackagingOnlyChanges(string(diff)); err != nil {
+			t.Fatal(err)
+		}
+		payloadSource, err = sourceArchive(payloadRevision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write("payload-source-compatibility.txt", []byte(fmt.Sprintf("payload_revision=%s\npayload_source_sha256=%x\npackaging_revision=%s\nchanged_paths:\n%s", payloadRevision, sha256.Sum256(payloadSource), revision, diff)))
+	}
 	args = append(args, "source.zip="+filepath.Join(out, "source.zip"))
 	retainedSHA := os.Getenv("WINFSP_PACKAGE_RETAINED_SHA256")
 	retained := os.Getenv("WINFSP_PACKAGE_RETAINED_PAYLOAD")
@@ -216,6 +262,7 @@ func TestOfflinePackageBuild(t *testing.T) {
 	if retained != "" {
 		command = strings.Replace(command, ";& ($inputRoot+", ";Copy-Item -LiteralPath ($inputRoot+'retained-payload.zip') -Destination C:\\lab\\retained-payload.zip;& ($inputRoot+", 1)
 		command += " -RetainedPayloadSha256 " + retainedSHA
+		command += fmt.Sprintf(" -PayloadRevision %s -PayloadSourceSha256 %x", payloadRevision, sha256.Sum256(payloadSource))
 		t.Log("assembling installer from retained payload; no compilation or signing")
 	} else {
 		t.Log("building complete native and managed package payload offline")
