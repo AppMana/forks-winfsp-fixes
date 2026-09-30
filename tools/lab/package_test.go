@@ -98,6 +98,20 @@ func TestOfflinePackageBuild(t *testing.T) {
 	if qualify != "" && qualify != "1" {
 		t.Fatal("WINFSP_PACKAGE_QUALIFY must be empty or 1")
 	}
+	existing := os.Getenv("WINFSP_PACKAGE_EXISTING_RESULTS")
+	existingSHA := os.Getenv("WINFSP_PACKAGE_EXISTING_RESULTS_SHA256")
+	focused := os.Getenv("WINFSP_PACKAGE_RDWR_ONLY")
+	if focused != "" && (focused != "1" || existing == "" || qualify != "1") {
+		t.Fatal("WINFSP_PACKAGE_RDWR_ONLY=1 requires a pinned existing package and qualification")
+	}
+	if existing != "" || existingSHA != "" {
+		if err := checkedFile(existing, existingSHA); err != nil {
+			t.Fatal(err)
+		}
+		if qualify != "1" || os.Getenv("WINFSP_PACKAGE_RETAINED_PAYLOAD") != "" {
+			t.Fatal("existing package requires qualification and cannot be combined with payload rebuilding")
+		}
+	}
 	architectures := os.Getenv("WINFSP_PACKAGE_NATIVE_ARCHITECTURES")
 	if architectures == "" {
 		architectures = "both"
@@ -113,9 +127,14 @@ func TestOfflinePackageBuild(t *testing.T) {
 			t.Fatal("rdwr repetitions must be 0..100")
 		}
 	}
+	if focused == "1" && repeats == 0 {
+		t.Fatal("focused diagnostic requires at least one repetition")
+	}
 	iso := os.Getenv("WINFSP_PACKAGE_EWDK_ISO")
-	if err := checkedFile(iso, os.Getenv("WINFSP_PACKAGE_EWDK_SHA256")); err != nil {
-		t.Fatal(err)
+	if existing == "" {
+		if err := checkedFile(iso, os.Getenv("WINFSP_PACKAGE_EWDK_SHA256")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	image := os.Getenv("LABCONTAINERS_WINDOWS_IMAGE")
 	info, err := exec.Command("docker", "image", "inspect", image).Output()
@@ -159,7 +178,14 @@ func TestOfflinePackageBuild(t *testing.T) {
 	write("inputs.json", pins)
 	media := filepath.Join(out, "inputs.iso")
 	args := []string{"-quiet", "-J", "-r", "-V", "PKGINPUTS", "-o", media, "-graft-points", "inputs.json=" + filepath.Join(out, "inputs.json")}
+	if existing != "" {
+		args = append(args, "existing-results.zip="+existing)
+		write("existing-package.txt", []byte(existing+"\nsha256="+existingSHA+"\n"))
+	}
 	for name, digest := range inputs.Files {
+		if existing != "" {
+			break // exact-package replay needs no compiler, WiX or .NET cache
+		}
 		folder := "dotnet"
 		if strings.HasPrefix(name, "wix") {
 			folder = "wix"
@@ -227,7 +253,7 @@ func TestOfflinePackageBuild(t *testing.T) {
 			t.Fatal(err)
 		}
 		args = append(args, "stock.msi="+stock)
-		if retained != "" {
+		if retained != "" || existing != "" {
 			cert := os.Getenv("WINFSP_PACKAGE_CERTIFICATE")
 			if err := checkedFile(cert, os.Getenv("WINFSP_PACKAGE_CERTIFICATE_SHA256")); err != nil {
 				t.Fatal(err)
@@ -235,9 +261,9 @@ func TestOfflinePackageBuild(t *testing.T) {
 			args = append(args, "lab.cer="+cert)
 		}
 	}
-	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1", "qualify-msi.ps1", "evidence.ps1", "process.ps1"} {
+	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1", "qualify-msi.ps1", "evidence.ps1", "process.ps1", "delete-pending-repro.ps1"} {
 		path := filepath.Join("../package", name)
-		if name == "build-clock.ps1" || name == "evidence.ps1" || name == "process.ps1" {
+		if name == "build-clock.ps1" || name == "evidence.ps1" || name == "process.ps1" || name == "delete-pending-repro.ps1" {
 			path = name
 		}
 		b, err := os.ReadFile(path)
@@ -265,8 +291,12 @@ func TestOfflinePackageBuild(t *testing.T) {
 		}
 	}()
 	topo := topology(image, iso)
-	topo.Topology.Nodes["vm"].Binds = append(topo.Topology.Nodes["vm"].Binds, media+":/package-inputs.iso:ro")
-	topo.Topology.Nodes["vm"].Env["QEMU_ADDITIONAL_ARGS"] += " -drive file=/package-inputs.iso,media=cdrom,readonly=on"
+	if existing != "" {
+		topo = topology(image, media)
+	} else {
+		topo.Topology.Nodes["vm"].Binds = append(topo.Topology.Nodes["vm"].Binds, media+":/package-inputs.iso:ro")
+		topo.Topology.Nodes["vm"].Env["QEMU_ADDITIONAL_ARGS"] += " -drive file=/package-inputs.iso,media=cdrom,readonly=on"
+	}
 	topologySource, err := clab.Source(topo)
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +319,13 @@ func TestOfflinePackageBuild(t *testing.T) {
 		defer stop()
 		// Collect small diagnostic evidence first. A later payload transfer
 		// failure must not strand all completed test logs inside a torn ZIP.
-		for _, archive := range []string{"evidence", "results"} {
+		archives := []string{"evidence", "results"}
+		if existing != "" {
+			// The original MSI/payload ZIP is already pinned on the host. Do not
+			// transfer those unchanged bytes back through serial control again.
+			archives = []string{"evidence"}
+		}
+		for _, archive := range archives {
 			guest := `C:\lab\package-` + archive + ".zip"
 			selection := `@(Get-ChildItem C:\lab\output -File | Where-Object {$_.Extension -notin @('.zip','.msi')} | ForEach-Object FullName)`
 			if archive == "results" {
@@ -362,7 +398,10 @@ func TestOfflinePackageBuild(t *testing.T) {
 		}
 	}()
 	command := fmt.Sprintf(`$ErrorActionPreference='Stop';Set-TimeZone -Id UTC;Set-Date -Date ([DateTimeOffset]::Parse('%s').UtcDateTime);$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';New-Item C:\lab -ItemType Directory -Force | Out-Null;Copy-Item -LiteralPath ($inputRoot+'source.zip') -Destination C:\lab\source.zip;& ($inputRoot+'build-payload.ps1') -Revision %s -SourceSha256 %x -InputsDirectory $inputRoot -HostUtc '%s' -Token '%s'`, time.Now().UTC().Format(time.RFC3339), revision, sha256.Sum256(source), time.Now().UTC().Format(time.RFC3339), filepath.Base(out))
-	if retained != "" {
+	if existing != "" {
+		command = fmt.Sprintf(`$ErrorActionPreference='Stop';Set-TimeZone -Id UTC;Set-Date -Date ([DateTimeOffset]::Parse('%s').UtcDateTime);$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';. ($inputRoot+'inputs.ps1');Import-QualifiedPackage ($inputRoot+'existing-results.zip') '%s' C:\lab;Write-Output 'PACKAGE_BUILD_COMPLETE:%s'`, time.Now().UTC().Format(time.RFC3339), existingSHA, filepath.Base(out))
+		t.Log("importing exact existing MSI and test binaries; no build or signing")
+	} else if retained != "" {
 		command = strings.Replace(command, ";& ($inputRoot+", ";Copy-Item -LiteralPath ($inputRoot+'retained-payload.zip') -Destination C:\\lab\\retained-payload.zip;& ($inputRoot+", 1)
 		command += " -RetainedPayloadSha256 " + retainedSHA
 		command += fmt.Sprintf(" -PayloadRevision %s -PayloadSourceSha256 %x", payloadRevision, sha256.Sum256(payloadSource))
@@ -381,10 +420,17 @@ func TestOfflinePackageBuild(t *testing.T) {
 			t.Log("qualifying actual MSI:", phase)
 			command := fmt.Sprintf(`$ErrorActionPreference='Stop';$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';& ($inputRoot+'qualify-msi.ps1') -Phase %s -Token %s -InputsDirectory $inputRoot`, phase, filepath.Base(out))
 			command += fmt.Sprintf(" -Architectures %s -RdwrRepeats %d", architectures, repeats)
+			if focused == "1" {
+				command += " -RdwrOnly"
+			}
 			r, e := node.ExecWithTimeout(ctx, 40*time.Minute, powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
 			result := string(r.GetStdout()) + string(r.GetStderr())
 			write("qualification-"+phase+"-command.txt", []byte(fmt.Sprintf("error=%v\nexit=%d\n%s", e, r.GetExitCode(), result)))
-			if e != nil || r.GetExitCode() != 0 || !strings.Contains(result, "PACKAGE_QUALIFICATION_"+phase+":"+filepath.Base(out)) {
+			marker := "PACKAGE_QUALIFICATION_" + phase + ":" + filepath.Base(out)
+			if focused == "1" && phase == "run" {
+				marker = "PACKAGE_RDWR_DIAGNOSTIC_COMPLETE:" + filepath.Base(out)
+			}
+			if e != nil || r.GetExitCode() != 0 || !strings.Contains(result, marker) {
 				t.Fatalf("MSI %s qualification failed: %v exit=%d\n%s", phase, e, r.GetExitCode(), result)
 			}
 			if phase == "install" {

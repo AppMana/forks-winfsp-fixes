@@ -1,4 +1,27 @@
 Set-StrictMode -Version Latest
+function Import-QualifiedPackage([string]$Archive,[string]$Sha256,[string]$Root) {
+    Assert-PinnedFile $Archive $Sha256
+    if(Test-Path -LiteralPath $Root){throw 'Package import requires a fresh lab directory'}
+    $source=Join-Path $Root 'existing-results'
+    Expand-CheckedArchive $Archive $source
+    $package=Get-Content (Join-Path $source 'package-manifest.json') -Raw | ConvertFrom-Json
+    if(-not $package.lab_only -or $package.production_qualified -or $package.version -cnotmatch '^\d+\.\d+\.\d+$'){throw 'Expected pinned lab-only MSI'}
+    $name="winfsp-$($package.version)-LAB-ONLY.msi"
+    Assert-PinnedFile (Join-Path $source $name) $package.package_sha256
+    Assert-PinnedFile (Join-Path $source 'payload.zip') $package.payload_sha256
+    $payload=Join-Path $Root 'package-build/installer-payload'
+    Expand-CheckedArchive (Join-Path $source 'payload.zip') $payload -FlatOnly
+    $actual=Assert-PackagePayload $payload $package.payload.source_revision $package.payload.version $package.payload.source_archive_sha256
+    foreach($property in $package.payload.files.PSObject.Properties) {
+        if($actual.files.($property.Name) -cne $property.Value){throw 'MSI and native payload manifests differ'}
+    }
+    $output=Join-Path $Root 'output'
+    New-Item $output -ItemType Directory | Out-Null
+    # Never copy historic passing test logs into a new qualification output.
+    foreach($file in @($name,'package-manifest.json','payload.zip')) {
+        Copy-Item -LiteralPath (Join-Path $source $file) -Destination $output
+    }
+}
 function Get-MsiDriverIdentity([string]$InstallDirectory,[string]$SxsDirectory) {
     # Product.wxs installs into SxS\sxs.[InstanceID]; src/dll/sxs.c derives
     # the service suffix from that directory, not the logical bin junction.

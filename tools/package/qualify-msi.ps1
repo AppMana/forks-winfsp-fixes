@@ -5,9 +5,11 @@ param(
     [Parameter(Mandatory)][string]$Token,
     [Parameter(Mandatory)][string]$InputsDirectory,
     [ValidateSet('both','x64','x86')][string]$Architectures='both',
-    [ValidateRange(0,100)][int]$RdwrRepeats=0
+    [ValidateRange(0,100)][int]$RdwrRepeats=0,
+    [switch]$RdwrOnly
 )
 $ErrorActionPreference='Stop'
+if($RdwrOnly -and $RdwrRepeats -lt 1){throw 'Focused diagnostic requires at least one repetition'}
 . "$PSScriptRoot\inputs.ps1"
 . "$PSScriptRoot\evidence.ps1"
 . "$PSScriptRoot\process.ps1"
@@ -72,7 +74,24 @@ try {
         if($drivers.Count -ne 1 -or $drivers[0].Name -ne $identity.Name -or $drivers[0].PathName.Trim('"') -notin @($identity.Path,('\??\'+$identity.Path))){throw 'Wrong installed driver running'}
         $drivers | Select-Object Name,State,PathName | ConvertTo-Json | Set-Content "$out\installed-driver.json"
         $arches=if($Architectures -eq 'both'){@('x64','x86')}else{@($Architectures)}
-        @{architectures=@($arches);rdwr_repeats=$RdwrRepeats;full_suite=$true} | ConvertTo-Json | Set-Content "$out\native-plan.json"
+        @{architectures=@($arches);rdwr_repeats=$RdwrRepeats;full_suite=(-not $RdwrOnly)} | ConvertTo-Json | Set-Content "$out\native-plan.json"
+        $traceStarted=$false
+        if($RdwrOnly) {
+            $control=@(& "$PSScriptRoot\delete-pending-repro.ps1" -Directory $out `
+                -MemfsExecutable 'C:\lab\package-build\installer-payload\memfs-x64.exe' `
+                -MemfsSHA256 $manifest.payload.files.'memfs-x64.exe' `
+                -MemfsDllSHA256 $manifest.payload.files.'winfsp-x64.dll')
+            $control | Set-Content "$out\delete-pending-controls.log"
+            if(@($control | Where-Object {$_ -ceq 'DELETE_PENDING_CONTROL_COMPLETE:held=5:released=2'}).Count -ne 2){throw 'Both deterministic deletion controls must pass'}
+            # Start BEFORE the first native operation. A later passing repeat
+            # cannot explain an earlier failure that was not traced.
+            Get-Process | Select-Object Id,ProcessName | ConvertTo-Json | Set-Content "$out\rdwr-processes.json"
+            & fltmc.exe filters | Set-Content "$out\rdwr-filters.txt"
+            & logman.exe start winfsp-rdwr -p '{EDD08927-9CC4-4E65-B970-C2560FB5C289}' 0x4f0 4 -o "$out\rdwr.etl" -f bincirc -max 32 -ets
+            if($LASTEXITCODE -ne 0){throw 'Diagnostic file-I/O trace failed to start'}
+            $traceStarted=$true
+        }
+        try {
         foreach($arch in $arches) {
             # Do not copy a candidate DLL beside the test: load the MSI-installed DLL.
             $runner="C:\lab\msi-test-$arch"
@@ -93,6 +112,7 @@ try {
                     Assert-NativeSuiteEvidence @('rdwr_noncached_test') (Get-Content "$out\$label.log" -Raw) $exit
                 }
             }
+            if($RdwrOnly){continue}
             $inventory=Invoke-NativeLabProcess $exe @('--list','+*') "$out\inventory-$arch.txt" "$out\inventory-$arch.stderr.txt"
             if($inventory -ne 0){throw 'Installed native inventory failed'}
             $exit=Invoke-NativeLabProcess $exe @('+*') "$out\native-$arch.log" "$out\native-$arch.stderr.txt"
@@ -101,6 +121,16 @@ try {
             if((Get-Content "$out\native-$arch.stderr.txt" -Raw) -match ': need (Administrator|SE_CREATE_SYMBOLIC_LINK_PRIVILEGE)'){throw 'Native suite skipped privilege checks'}
             Assert-NativeSuiteEvidence @(Get-Content "$out\inventory-$arch.txt") (Get-Content "$out\native-$arch.log" -Raw) $exit
         }
+        } finally {
+            if($traceStarted) {
+                & logman.exe stop winfsp-rdwr -ets
+                if($LASTEXITCODE -ne 0){throw 'Diagnostic file-I/O trace failed to stop'}
+            }
+        }
     }
 } finally {Stop-Transcript}
-Write-Output "PACKAGE_QUALIFICATION_${Phase}:$Token"
+if($RdwrOnly -and $Phase -eq 'run') {
+    Write-Output "PACKAGE_RDWR_DIAGNOSTIC_COMPLETE:$Token"
+} else {
+    Write-Output "PACKAGE_QUALIFICATION_${Phase}:$Token"
+}

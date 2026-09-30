@@ -92,6 +92,32 @@ try {
     $flat=Join-Path $root 'flat-payload'
     Export-PackagePayload $payload $flat ('a'*40) '2.2.26271' ('c'*64)
     $null=Assert-PackagePayload $flat ('a'*40) '2.2.26271' ('c'*64)
+    $packageInput=Join-Path $root 'existing-package'
+    New-Item $packageInput -ItemType Directory | Out-Null
+    $packagePayload=Join-Path $packageInput 'payload.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($flat,$packagePayload)
+    $packageMsi=Join-Path $packageInput 'winfsp-2.2.26271-LAB-ONLY.msi'
+    [IO.File]::WriteAllText($packageMsi,'exact existing installer')
+    @{lab_only=$true;production_qualified=$false;version='2.2.26271';payload=$manifest;
+      payload_sha256=(Get-FileHash $packagePayload).Hash.ToLowerInvariant();
+      package_sha256=(Get-FileHash $packageMsi).Hash.ToLowerInvariant()} |
+        ConvertTo-Json -Depth 6 | Set-Content (Join-Path $packageInput 'package-manifest.json')
+    [IO.File]::WriteAllText((Join-Path $packageInput 'native-x86.log'),'old passing evidence must not be reused')
+    $packageZip=Join-Path $root 'existing-package.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($packageInput,$packageZip)
+    $packageHash=(Get-FileHash $packageZip).Hash.ToLowerInvariant()
+    $import=Join-Path $root 'imported-package'
+    Import-QualifiedPackage $packageZip $packageHash $import
+    if(Test-Path (Join-Path $import 'output/native-x86.log')){throw 'Historical test results imported as new evidence'}
+    Assert-PinnedFile (Join-Path $import 'output/winfsp-2.2.26271-LAB-ONLY.msi') (Get-FileHash $packageMsi).Hash.ToLowerInvariant()
+    Reject {Import-QualifiedPackage $packageZip $packageHash $import}
+    Reject {Import-QualifiedPackage $packageZip ('f'*64) (Join-Path $root 'bad-import')}
+    # A valid outer archive hash cannot excuse stale inner installer pins.
+    [IO.File]::WriteAllText($packageMsi,'changed installer')
+    $changedZip=Join-Path $root 'changed-package.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($packageInput,$changedZip)
+    Reject {Import-QualifiedPackage $changedZip (Get-FileHash $changedZip).Hash.ToLowerInvariant() (Join-Path $root 'changed-import')}
+    if(Test-Path (Join-Path $root 'changed-import/output')){throw 'Corrupt imported package was promoted'}
     if(Test-Path (Join-Path $flat 'winfsp.sys')){throw 'WDK intermediate leaked into payload'}
     if(-not(Test-Path (Join-Path $wdk 'driver.inf'))){throw 'Original build outputs modified'}
     Reject {Export-PackagePayload $payload $flat ('a'*40) '2.2.26271' ('c'*64)}
