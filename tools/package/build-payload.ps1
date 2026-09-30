@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{64}$')][string]$SourceSha256,
     [Parameter(Mandatory)][string]$InputsDirectory,
     [Parameter(Mandatory)][DateTimeOffset]$HostUtc,
-    [Parameter(Mandatory)][string]$Token
+    [Parameter(Mandatory)][string]$Token,
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$RetainedPayloadSha256
 )
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot\inputs.ps1"
@@ -38,6 +39,19 @@ New-Item $output -ItemType Directory | Out-Null
 Start-Transcript "$output\payload-build.log"
 $payload=$null
 try {
+    $version='2.1.26273'
+    $msbuild=(Get-Command MSBuild.exe).Source
+    $certificateThumbprint=$null
+    if($RetainedPayloadSha256) {
+        # Only retry assembly. Never compile, restore, or resign retained bytes.
+        Assert-PinnedFile C:\lab\retained-payload.zip $RetainedPayloadSha256
+        Expand-CheckedArchive C:\lab\retained-payload.zip "$root\retained"
+        $payload="$root\installer-payload"
+        New-Item $payload -ItemType Directory | Out-Null
+        Copy-Item -LiteralPath @(Get-ChildItem "$root\retained" -File -Force | ForEach-Object FullName) -Destination $payload
+        # Validate the ORIGINAL manifest; do not regenerate hashes over cached bytes.
+        $null=Assert-PackagePayload $payload $Revision $version $SourceSha256
+    } else {
     Expand-CheckedArchive C:\lab\source.zip "$root\source"
     Expand-CheckedArchive (Join-Path $InputsDirectory 'wix314-binaries.zip') "$root\wix"
     Expand-CheckedArchive (Join-Path $InputsDirectory 'dotnet-sdk-8.0.425-win-x64.zip') "$root\dotnet"
@@ -63,7 +77,6 @@ try {
       binding_target='net35';sample_target='net452'} | ConvertTo-Json | Set-Content "$output\managed-targets.json"
     $payload="$source\build\VStudio\build\Release"
     New-Item $payload -ItemType Directory -Force | Out-Null
-    $version='2.1.26273'
     $common=@('/t:Build','/m:2','/nr:false','/nologo','/v:minimal',
         '/p:Configuration=Release','/p:BuildProjectReferences=false',
         '/p:MyTargetPlatformVersion=10.0.19041.0','/p:WindowsTargetPlatformVersion=10.0.19041.0',
@@ -98,24 +111,23 @@ try {
         if($LASTEXITCODE -ne 0){throw 'CustomActions build failed'}
     } finally {$env:CL=$savedCL}
     $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=AppMana WinFsp MSI LAB ONLY' -CertStoreLocation Cert:\CurrentUser\My
+    $certificateThumbprint=$cert.Thumbprint
     Export-Certificate -Cert $cert -FilePath "$output\lab.cer" | Out-Null
     foreach($arch in @('x86','x64','a64')) {
         & $signer sign /fd SHA256 /s My /sha1 $cert.Thumbprint "$payload\winfsp-$arch.sys"
         if($LASTEXITCODE -ne 0){throw "Lab driver signing failed: $arch"}
     }
-    $files=@{}
-    foreach($file in Get-ChildItem $payload -File){$files[$file.Name]=(Get-FileHash $file.FullName).Hash.ToLowerInvariant()}
-    $manifest=@{schema=1;source_revision=$Revision;source_archive_sha256=$SourceSha256;version=$version;files=$files}
-    $manifest | ConvertTo-Json -Depth 5 | Set-Content "$payload\payload.json"
-    $null=Assert-PackagePayload $payload $Revision $version $SourceSha256
-    Compress-Archive -Path "$payload\*" -DestinationPath "$output\payload.zip"
+    Export-PackagePayload $payload "$root\installer-payload" $Revision $version $SourceSha256
+    }
+    Compress-Archive -Path "$root\installer-payload\*" -DestinationPath "$output\payload.zip"
     & "$PSScriptRoot\build-msi.ps1" -SourceZip C:\lab\source.zip -SourceSha256 $SourceSha256 -Revision $Revision `
         -PayloadZip "$output\payload.zip" -PayloadSha256 (Get-FileHash "$output\payload.zip").Hash.ToLowerInvariant() `
         -WixZip (Join-Path $InputsDirectory 'wix314-binaries.zip') -WixSha256 $pins.files.'wix314-binaries.zip' `
         -MSBuildPath $msbuild -MSBuildSha256 (Get-FileHash $msbuild).Hash.ToLowerInvariant() `
         -Version $version -OutputDirectory "$root\assembled" -LabOnly
     Copy-Item "$root\assembled\*.msi","$root\assembled\package-manifest.json","$root\assembled\package.log" $output
-    @{lab_only=$true;production_qualified=$false;certificate_thumbprint=$cert.Thumbprint;
+    @{lab_only=$true;production_qualified=$false;certificate_thumbprint=$certificateThumbprint;
+      retained_payload_sha256=$RetainedPayloadSha256;
       source_revision=$Revision;ewdk_build=$env:BuildLab;inputs=$pins} |
       ConvertTo-Json -Depth 5 | Set-Content "$output\build-provenance.json"
 } finally {

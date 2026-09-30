@@ -127,6 +127,22 @@ function Add-LabInstallerGuards([string]$Path) {
     $null=$product.AppendChild($action)
     $xml.Save($Path)
 }
+function Export-PackagePayload([string]$BuildDirectory,[string]$Directory,[string]$Revision,[string]$Version,[string]$SourceSha256) {
+    if(Test-Path -LiteralPath $Directory){throw 'Payload destination must be fresh'}
+    New-Item -Path $Directory -ItemType Directory | Out-Null
+    $files=@{}
+    # Upstream's installer references flat outputs. WDK also creates nested
+    # intermediate directories: preserve them at the build site, not in MSI input.
+    foreach($file in Get-ChildItem -LiteralPath $BuildDirectory -File -Force) {
+        if($file.Name -eq 'payload.json'){continue}
+        Assert-ArchiveName $file.Name
+        Copy-Item -LiteralPath $file.FullName -Destination $Directory
+        $files[$file.Name]=(Get-FileHash (Join-Path $Directory $file.Name)).Hash.ToLowerInvariant()
+    }
+    @{schema=1;source_revision=$Revision;source_archive_sha256=$SourceSha256;version=$Version;files=$files} |
+        ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Directory 'payload.json')
+    $null=Assert-PackagePayload $Directory $Revision $Version $SourceSha256
+}
 function Assert-PackagePayload([string]$Directory,[string]$Revision,[string]$Version,[string]$SourceSha256) {
     $manifest=Get-Content -LiteralPath (Join-Path $Directory 'payload.json') -Raw | ConvertFrom-Json
     if($manifest.schema -ne 1 -or $manifest.source_revision -cne $Revision -or $manifest.version -cne $Version) {throw 'Payload provenance mismatch'}

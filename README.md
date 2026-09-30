@@ -154,6 +154,23 @@ cd tools/lab
 GOWORK=off go test -v -count=1 -run '^TestOfflinePackageBuild$' -timeout=85m
 ```
 
+Source and scripts are staged on read-only input media, not uploaded over the
+serial control channel. If compilation finished but assembly failed, retry only
+assembly using retained binaries (including their original `payload.json`):
+
+```sh
+export WINFSP_PACKAGE_REVISION=<full-source-commit-from-provenance>
+export WINFSP_PACKAGE_RETAINED_PAYLOAD=/absolute/path/retained-payload.zip
+export WINFSP_PACKAGE_RETAINED_SHA256=<sha256-of-that-archive>
+# Run the same test command with the other inputs above unchanged.
+```
+
+This mode performs no compilation, restore, or signing. It validates the original
+payload manifest, file hashes, source identity and architectures before assembly;
+an incomplete or mismatched archive fails. WDK intermediate directories are not
+installer inputs. Preserve the original `lab.cer` alongside the retained payload;
+assembly does not create a replacement signing certificate.
+
 The input root contains `wix/wix314-binaries.zip` and, under `dotnet/`, the SDK
 and three reference packages named and pinned in `tools/package/inputs.json`.
 The SDK is Microsoft's Windows x64 .NET 8.0.425 archive; reference packages are

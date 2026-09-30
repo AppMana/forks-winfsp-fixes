@@ -83,6 +83,19 @@ try {
     $manifest=@{schema=1;source_revision='a'*40;source_archive_sha256='c'*64;version='2.2.26271';files=$files}
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
     $null=Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)
+    # WDK places a winfsp.sys staging directory beside the actual outputs.
+    # The installer consumes a flat payload, not that build-only directory.
+    $wdk=Join-Path $payload 'winfsp.sys'
+    New-Item $wdk -ItemType Directory | Out-Null
+    [IO.File]::WriteAllText((Join-Path $wdk 'driver.inf'),'WDK staging only')
+    Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
+    $flat=Join-Path $root 'flat-payload'
+    Export-PackagePayload $payload $flat ('a'*40) '2.2.26271' ('c'*64)
+    $null=Assert-PackagePayload $flat ('a'*40) '2.2.26271' ('c'*64)
+    if(Test-Path (Join-Path $flat 'winfsp.sys')){throw 'WDK intermediate leaked into payload'}
+    if(-not(Test-Path (Join-Path $wdk 'driver.inf'))){throw 'Original build outputs modified'}
+    Reject {Export-PackagePayload $payload $flat ('a'*40) '2.2.26271' ('c'*64)}
+    Remove-Item $wdk -Recurse
     Reject {Assert-PackagePayload $payload ('b'*40) '2.2.26271' ('c'*64)}
     Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26272' ('c'*64)}
     Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('d'*64)}

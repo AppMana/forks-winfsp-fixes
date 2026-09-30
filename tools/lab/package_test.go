@@ -81,10 +81,11 @@ func TestOfflinePackageBuild(t *testing.T) {
 		}
 		args = append(args, name+"="+path)
 	}
-	if b, err := exec.Command("genisoimage", args...).CombinedOutput(); err != nil {
-		t.Fatalf("media: %v %s", err, b)
+	sourceRef := os.Getenv("WINFSP_PACKAGE_REVISION")
+	if sourceRef == "" {
+		sourceRef = "HEAD"
 	}
-	revisionBytes, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	revisionBytes, err := exec.Command("git", "rev-parse", "--verify", sourceRef+"^{commit}").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +95,34 @@ func TestOfflinePackageBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("source.zip", source)
+	args = append(args, "source.zip="+filepath.Join(out, "source.zip"))
+	retainedSHA := os.Getenv("WINFSP_PACKAGE_RETAINED_SHA256")
+	retained := os.Getenv("WINFSP_PACKAGE_RETAINED_PAYLOAD")
+	if retained != "" || retainedSHA != "" {
+		if os.Getenv("WINFSP_PACKAGE_REVISION") == "" {
+			t.Fatal("retained payload requires its explicit WINFSP_PACKAGE_REVISION")
+		}
+		if err := checkedFile(retained, retainedSHA); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "retained-payload.zip="+retained)
+		write("retained-payload.txt", []byte(retained+"\nsha256="+retainedSHA+"\n"))
+	}
+	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1"} {
+		path := filepath.Join("../package", name)
+		if name == "build-clock.ps1" {
+			path = name
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write("input-"+name, b)
+		args = append(args, name+"="+filepath.Join(out, "input-"+name))
+	}
+	if b, err := exec.Command("genisoimage", args...).CombinedOutput(); err != nil {
+		t.Fatalf("media: %v %s", err, b)
+	}
 	write("image.json", info)
 	write("daemon.txt", buildInfo)
 	write("provenance.txt", []byte(fmt.Sprintf("source_revision=%s\nsource_sha256=%x\newdk_sha256=%s\n", revision, sha256.Sum256(source), os.Getenv("WINFSP_PACKAGE_EWDK_SHA256"))))
@@ -165,25 +194,14 @@ func TestOfflinePackageBuild(t *testing.T) {
 			}
 		}
 	}()
-	if err := node.Put(ctx, `C:\lab\source.zip`, 0600, source); err != nil {
-		t.Fatal(err)
+	command := fmt.Sprintf(`$ErrorActionPreference='Stop';Set-TimeZone -Id UTC;Set-Date -Date ([DateTimeOffset]::Parse('%s').UtcDateTime);$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';New-Item C:\lab -ItemType Directory -Force | Out-Null;Copy-Item -LiteralPath ($inputRoot+'source.zip') -Destination C:\lab\source.zip;& ($inputRoot+'build-payload.ps1') -Revision %s -SourceSha256 %x -InputsDirectory $inputRoot -HostUtc '%s' -Token '%s'`, time.Now().UTC().Format(time.RFC3339), revision, sha256.Sum256(source), time.Now().UTC().Format(time.RFC3339), filepath.Base(out))
+	if retained != "" {
+		command = strings.Replace(command, ";& ($inputRoot+", ";Copy-Item -LiteralPath ($inputRoot+'retained-payload.zip') -Destination C:\\lab\\retained-payload.zip;& ($inputRoot+", 1)
+		command += " -RetainedPayloadSha256 " + retainedSHA
+		t.Log("assembling installer from retained payload; no compilation or signing")
+	} else {
+		t.Log("building complete native and managed package payload offline")
 	}
-	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1"} {
-		path := filepath.Join("../package", name)
-		if name == "build-clock.ps1" {
-			path = name
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		write("input-"+name, b)
-		if err := node.Put(ctx, `C:\lab\`+name, 0600, b); err != nil {
-			t.Fatal(err)
-		}
-	}
-	command := fmt.Sprintf(`$ErrorActionPreference='Stop';Set-TimeZone -Id UTC;Set-Date -Date ([DateTimeOffset]::Parse('%s').UtcDateTime);$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};& C:\lab\build-payload.ps1 -Revision %s -SourceSha256 %x -InputsDirectory ($disc[0].DriveLetter+':\') -HostUtc '%s' -Token '%s'`, time.Now().UTC().Format(time.RFC3339), revision, sha256.Sum256(source), time.Now().UTC().Format(time.RFC3339), filepath.Base(out))
-	t.Log("building complete native and managed package payload offline")
 	r, err := node.ExecWithTimeout(ctx, 60*time.Minute, powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
 	text := string(r.GetStdout()) + string(r.GetStderr())
 	write("build-command.txt", []byte(fmt.Sprintf("error=%v\nexit=%d\n%s", err, r.GetExitCode(), text)))
