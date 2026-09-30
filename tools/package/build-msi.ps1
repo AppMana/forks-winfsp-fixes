@@ -48,7 +48,8 @@ try {
     $msbuild=(Resolve-Path -LiteralPath $MSBuildPath).Path
     $buildArguments=@((Join-Path $installer 'winfsp_msi.wixproj'),'/t:Build','/m:1','/nr:false',
         '/p:Configuration=Release','/p:Platform=x86',"/p:SolutionDir=$source\build\VStudio\",
-        "/p:WixTargetsPath=$wix\wix.targets","/p:WixToolPath=$wix\","/p:WixExtDir=$wix",
+        "/p:WixTargetsPath=$wix\wix.targets","/p:WixTasksPath=$wix\WixTasks.dll",
+        "/p:WixInstallPath=$wix\","/p:WixToolPath=$wix\","/p:WixExtDir=$wix",
         "/p:MyVersion=$Version","/p:MyFullVersion=$Version.$($Revision.Substring(0,7))",
         "/p:MyGitRevision=$($Revision.Substring(0,7))",'/p:MyProductVersion=AppMana LAB ONLY',
         '/p:MyCompanyName=AppMana (lab packaging)','/p:MyProductStage=Beta',"/bl:$out\package.binlog")

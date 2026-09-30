@@ -171,6 +171,17 @@ an incomplete or mismatched archive fails. WDK intermediate directories are not
 installer inputs. Preserve the original `lab.cer` alongside the retained payload;
 assembly does not create a replacement signing certificate.
 
+To exercise MSI upgrade/rollback and the installed native files in that same VM,
+also set `WINFSP_PACKAGE_QUALIFY=1` and `SEAWEEDFS_WINFSP_MSI` to the pinned stock
+2.1.25156 installer. When reusing a payload, supply `WINFSP_PACKAGE_CERTIFICATE`
+and `WINFSP_PACKAGE_CERTIFICATE_SHA256` for its original `lab.cer`. The harness
+checks the lab opt-in guard, installs stock, injects a deferred upgrade failure,
+verifies old binary hashes survive rollback, upgrades successfully, and reboots.
+Then both x64 and x86 upstream native suites run with in-process attestation of
+the MSI-installed DLL and an explicit loaded-driver path/hash check. This is
+isolated test-signing only; it does not qualify production signing or ARM64
+runtime behavior. Default build-only runs do not claim installer qualification.
+
 The input root contains `wix/wix314-binaries.zip` and, under `dotnet/`, the SDK
 and three reference packages named and pinned in `tools/package/inputs.json`.
 The SDK is Microsoft's Windows x64 .NET 8.0.425 archive; reference packages are

@@ -24,6 +24,10 @@ func TestOfflinePackageBuild(t *testing.T) {
 	if os.Getenv("WINFSP_PACKAGE_LIVE") != "1" {
 		t.Skip("set WINFSP_PACKAGE_LIVE=1")
 	}
+	qualify := os.Getenv("WINFSP_PACKAGE_QUALIFY")
+	if qualify != "" && qualify != "1" {
+		t.Fatal("WINFSP_PACKAGE_QUALIFY must be empty or 1")
+	}
 	iso := os.Getenv("WINFSP_PACKAGE_EWDK_ISO")
 	if err := checkedFile(iso, os.Getenv("WINFSP_PACKAGE_EWDK_SHA256")); err != nil {
 		t.Fatal(err)
@@ -108,9 +112,23 @@ func TestOfflinePackageBuild(t *testing.T) {
 		args = append(args, "retained-payload.zip="+retained)
 		write("retained-payload.txt", []byte(retained+"\nsha256="+retainedSHA+"\n"))
 	}
-	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1"} {
+	if qualify == "1" {
+		stock := os.Getenv("SEAWEEDFS_WINFSP_MSI")
+		if err := checkedFile(stock, msiSHA); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "stock.msi="+stock)
+		if retained != "" {
+			cert := os.Getenv("WINFSP_PACKAGE_CERTIFICATE")
+			if err := checkedFile(cert, os.Getenv("WINFSP_PACKAGE_CERTIFICATE_SHA256")); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "lab.cer="+cert)
+		}
+	}
+	for _, name := range []string{"build-payload.ps1", "build-msi.ps1", "inputs.ps1", "build-clock.ps1", "qualify-msi.ps1", "evidence.ps1", "process.ps1"} {
 		path := filepath.Join("../package", name)
-		if name == "build-clock.ps1" {
+		if name == "build-clock.ps1" || name == "evidence.ps1" || name == "process.ps1" {
 			path = name
 		}
 		b, err := os.ReadFile(path)
@@ -207,5 +225,28 @@ func TestOfflinePackageBuild(t *testing.T) {
 	write("build-command.txt", []byte(fmt.Sprintf("error=%v\nexit=%d\n%s", err, r.GetExitCode(), text)))
 	if err != nil || r.GetExitCode() != 0 || !strings.Contains(text, "PACKAGE_BUILD_COMPLETE:"+filepath.Base(out)) {
 		t.Fatalf("package build failed: %v exit=%d\n%s", err, r.GetExitCode(), text)
+	}
+	if qualify == "1" {
+		for _, phase := range []string{"install", "run"} {
+			t.Log("qualifying actual MSI:", phase)
+			command := fmt.Sprintf(`$ErrorActionPreference='Stop';$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';& ($inputRoot+'qualify-msi.ps1') -Phase %s -Token %s -InputsDirectory $inputRoot`, phase, filepath.Base(out))
+			r, e := node.ExecWithTimeout(ctx, 40*time.Minute, powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
+			result := string(r.GetStdout()) + string(r.GetStderr())
+			write("qualification-"+phase+"-command.txt", []byte(fmt.Sprintf("error=%v\nexit=%d\n%s", e, r.GetExitCode(), result)))
+			if e != nil || r.GetExitCode() != 0 || !strings.Contains(result, "PACKAGE_QUALIFICATION_"+phase+":"+filepath.Base(out)) {
+				t.Fatalf("MSI %s qualification failed: %v exit=%d\n%s", phase, e, r.GetExitCode(), result)
+			}
+			if phase == "install" {
+				r, e := node.ExecWithTimeout(ctx, time.Minute, `C:\Windows\System32\shutdown.exe`, "/r", "/t", "5")
+				if e != nil || r.GetExitCode() != 0 {
+					t.Fatal("schedule MSI guest reboot", e)
+				}
+				ready := `$ErrorActionPreference='Stop';if((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToFileTimeUtc() -le [long](Get-Content C:\lab\pre-reboot.txt)){throw 'reboot not observed'};'MSI_REBOOT_READY'`
+				_, e = session.RunTimeline(ctx, &labv1.TimelineAction{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{Exec: &labv1.ExecRequest{Node: node.Ref(), Argv: []string{powershell, "-NoProfile", "-Command", ready}, TimeoutMillis: 30000}, TimeoutMillis: 600000, RetryMillis: 2000, StdoutContains: []byte("MSI_REBOOT_READY")}}})
+				if e != nil {
+					t.Fatal(e)
+				}
+			}
+		}
 	}
 }

@@ -1,4 +1,9 @@
 Set-StrictMode -Version Latest
+function Assert-DeferredRollbackEvidence([string]$Log) {
+    if($Log -notmatch '\bCustomAction WixFailWhenDeferred returned actual error code 1603\b') {
+        throw 'Deferred rollback fault execution not proved by installer log'
+    }
+}
 function Select-MsiManagedTarget([string]$Path) {
     [xml]$project=[IO.File]::ReadAllText($Path)
     $targets=$project.SelectNodes('/Project/PropertyGroup/TargetFrameworks')

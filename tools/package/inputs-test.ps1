@@ -160,10 +160,12 @@ try {
     if($before.Wix.Product.UpgradeCode -cne $after.Wix.Product.UpgradeCode -or
         $before.SelectNodes('//*[local-name()="File"]').Count -ne $after.SelectNodes('//*[local-name()="File"]').Count){throw 'Upstream package identity or payload changed'}
     Reject {Add-LabInstallerGuards $product}
-    foreach($script in @('build-msi.ps1','build-payload.ps1')) {
+    if(-not [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'build-msi.ps1')).Contains('/p:WixTasksPath=')){throw 'Portable WiX must explicitly locate WixTasks.dll without registry installation'}
+    foreach($script in @('build-msi.ps1','build-payload.ps1','qualify-msi.ps1')) {
         $tokens=$null; $errors=$null
         $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $script),[ref]$tokens,[ref]$errors)
         if($errors.Count){throw ($errors | Out-String)}
     }
+    & (Join-Path $PSScriptRoot 'qualify-msi-test.ps1')
     'PACKAGE_INPUT_CONTRACTS_PASS'
 } finally {Remove-Item -LiteralPath $root -Recurse -Force}
