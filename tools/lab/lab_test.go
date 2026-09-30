@@ -632,6 +632,20 @@ func TestImageRequiresMatchedHelper(t *testing.T) {
 	}
 }
 
+func TestDocumentedNativeLabUsesMatchedHelper(t *testing.T) {
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "`"+helperRevision+"`; do not use the old alpha.2 daemon.") {
+		t.Fatal("documented SDK/daemon/helper revision does not match the native harness")
+	}
+	if !strings.Contains(text, "export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:csi-"+helperRevision[:7]) {
+		t.Fatal("documented VM image example does not match the native harness")
+	}
+}
+
 func sourceArchive(revision string) ([]byte, error) {
 	// git archive is cwd-relative: the harness lives two levels below the
 	// application root. Never accidentally compile a tools-only archive.

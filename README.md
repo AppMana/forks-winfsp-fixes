@@ -38,7 +38,7 @@ export WINFSP_LAB_LIVE=1
 export WINFSP_LAB_EWDK_ISO=/absolute/path/EWDK_ge_release_svc_prod1_26100_250904-1728.iso
 export SEAWEEDFS_WINFSP_MSI=/absolute/path/winfsp-2.1.25156.msi
 export LABCONTAINERS_LABD=/absolute/path/matched/labd
-export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:stale-read-56e537c
+export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:csi-1e16650
 export RUNNER_TEMP=/absolute/path/persistent-results
 cd tools/lab
 GOWORK=off go test -v -count=1 -run '^TestNativeWindows$' -timeout=120m
@@ -79,7 +79,7 @@ target-classification RED. It never treats an ordinary test pass or a failure
 before the observer callback as reproduction evidence.
 
 The SDK, daemon and image guest helper must all match
-`56e537c59dcb051ae6dba677a557db2483b6fefc`; do not use the old alpha.2 daemon.
+`1e16650971a8d0307e465e75fdc047606165bbe7`; do not use the old alpha.2 daemon.
 The EWDK and MSI hashes are enforced in `tools/lab/lab_test.go`. Build the
 daemon from that clean SDK checkout with `go build -o /absolute/path/labd ./cmd/labd`.
 The Windows image and `alpine:3.20` peer must already exist locally. Guests
@@ -118,8 +118,27 @@ runner. The workflow produces retained test artifacts, not releases or MSIs.
 
 For CSI deployment, package matching production-signed SYS/DLL files through
 the MSI build, pin its URL and SHA-256 in the mount image, and qualify host
-installation/upgrade/rollback after draining mounts. A DLL-only image update
+installation and upgrade using the isolated Kubernetes/Labcontainers harness.
+Do not drain production nodes to perform qualification. A DLL-only image update
 cannot deploy this kernel fix. Never enable test signing on cluster nodes.
+
+`tools/package/build-msi.ps1` assembles the complete upstream installer from
+pinned source, payload and WiX archives. It requires `-LabOnly`, a fresh output
+directory and a hash-pinned Windows MSBuild executable; its output is not a
+production-signed release. The payload manifest must match the source revision,
+source archive digest and package version. It includes native x86/x64/ARM64
+drivers, DLLs, import libraries, launcher tools and Memfs, plus CustomActions
+and the .NET bindings/sample. See `Assert-PackagePayload` in
+`tools/package/inputs.ps1` for the enforced file inventory.
+
+The existing native x64 VM build is not a complete MSI payload. In particular,
+the pinned 26100 EWDK lacks x86 kernel libraries; it cannot alone build all
+three driver architectures. The .NET projects also require a .NET SDK and
+their target-framework reference assemblies (net35/netstandard2.0 and net452).
+Stage and pin those build inputs before attempting complete offline assembly;
+do not substitute stock binaries and label them as built from the patched
+revision. Package-input contract tests validate rejection and archive handling,
+not successful MSI assembly, installation or filesystem behavior.
 
 ## Overview
 
