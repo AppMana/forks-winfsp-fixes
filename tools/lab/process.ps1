@@ -3,6 +3,9 @@ function Invoke-NativeLabProcess {
           [string]$StderrPath, [int]$TimeoutMillis=1100000)
     $p=New-Object System.Diagnostics.Process
     $p.StartInfo.FileName=$Executable
+    $location=Get-Location
+    if($location.Provider.Name -ne 'FileSystem'){throw 'Native process requires a filesystem working directory'}
+    $p.StartInfo.WorkingDirectory=$location.ProviderPath
     # Harness arguments are controlled option names/paths without spaces.
     if(@($Arguments | Where-Object {$_ -match '[\s"]'}).Count){throw 'Unsupported native argument quoting'}
     $p.StartInfo.Arguments=$Arguments -join ' '

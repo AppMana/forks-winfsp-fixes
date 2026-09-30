@@ -2,6 +2,8 @@ $ErrorActionPreference='Stop'
 . "$PSScriptRoot/process.ps1"
 $out=[IO.Path]::GetTempFileName()
 $err=[IO.Path]::GetTempFileName()
+$directory=Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+New-Item $directory -ItemType Directory | Out-Null
 try {
     $exe=(Get-Process -Id $PID).Path
     # Fast child exit, explicit nonzero status and both redirected streams.
@@ -9,6 +11,14 @@ try {
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $code=Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 30000
     if($code -ne 23 -or [IO.File]::ReadAllText($out) -cne 'stdout-proof' -or [IO.File]::ReadAllText($err) -cne 'stderr-proof'){throw 'Lost process status or output'}
+    # PowerShell Set-Location does not change the OS process working directory.
+    # The child must use the caller's selected filesystem location explicitly.
+    Push-Location $directory
+    try {
+        $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('[Console]::Out.Write([Environment]::CurrentDirectory)'))
+        $code=Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 30000
+        if($code -ne 0 -or [IO.File]::ReadAllText($out) -cne $directory){throw 'Native child ignored the selected working directory'}
+    } finally {Pop-Location}
     # The child observes its own redirected output before it exits. Buffering
     # until process termination cannot satisfy this check.
     [IO.File]::WriteAllText($out,'')
@@ -39,4 +49,4 @@ exit 31
     catch {if($_.Exception.Message -eq 'Native suite timed out'){$timedOut=$true}else{throw}}
     if(-not $timedOut){throw 'Process deadline was not enforced'}
     'PASS: fast native process preserves exit/stdout/stderr and enforces deadline'
-} finally {Remove-Item -LiteralPath $out,$err}
+} finally {Remove-Item -LiteralPath $out,$err; Remove-Item -LiteralPath $directory}
