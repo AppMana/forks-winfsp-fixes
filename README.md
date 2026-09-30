@@ -186,6 +186,13 @@ Then both x64 and x86 upstream native suites run with in-process attestation of
 the MSI-installed DLL and an explicit loaded-driver path/hash check. This is
 isolated test-signing only; it does not qualify production signing or ARM64
 runtime behavior. Default build-only runs do not claim installer qualification.
+For an affected-architecture rerun, `WINFSP_PACKAGE_NATIVE_ARCHITECTURES=x86`
+or `x64` limits the native suite; the default is `both`, and retained evidence
+records the selection. `WINFSP_PACKAGE_RDWR_REPEATS=50` first runs the unchanged
+noncached-read/write test against NTFS and WinFsp repeatedly, then runs the full
+selected suite. Any failing iteration stops the run; this is not retry-to-green.
+Small logs/manifests are collected first as `evidence.zip`. Bulk results use
+bounded chunk retries and remain `.partial` until length and ZIP CRC checks pass.
 
 The input root contains `wix/wix314-binaries.zip` and, under `dotnet/`, the SDK
 and three reference packages named and pinned in `tools/package/inputs.json`.

@@ -1,11 +1,13 @@
 package lab
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,52 @@ import (
 	"github.com/appmana/labcontainers/pkg/client"
 	clab "github.com/appmana/labcontainers/pkg/containerlab"
 )
+
+func packageChunk(ctx context.Context, size int, read func() ([]byte, error)) ([]byte, error) {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		b, err := read()
+		if err == nil && len(b) == size {
+			return b, nil
+		}
+		last = err
+		if last == nil {
+			last = fmt.Errorf("artifact chunk length %d, expected %d", len(b), size)
+		}
+	}
+	return nil, last
+}
+
+func TestPackageChunkRetriesWithoutAcceptingPartialOutput(t *testing.T) {
+	calls := 0
+	b, err := packageChunk(context.Background(), 3, func() ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		if calls == 2 {
+			return []byte("ab"), nil
+		}
+		return []byte("abc"), nil
+	})
+	if err != nil || string(b) != "abc" || calls != 3 {
+		t.Fatalf("%q %v calls=%d", b, err, calls)
+	}
+	calls = 0
+	_, err = packageChunk(context.Background(), 3, func() ([]byte, error) { calls++; return []byte("ab"), nil })
+	if err == nil || calls != 3 {
+		t.Fatal("unbounded or accepted partial chunk", err, calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = packageChunk(ctx, 3, func() ([]byte, error) { t.Fatal("read after cancellation"); return nil, nil })
+	if err != context.Canceled {
+		t.Fatal(err)
+	}
+}
 
 // This builds a lab-only installer. It neither installs it nor qualifies it.
 func checkPackagingOnlyChanges(diff string) error {
@@ -49,6 +97,21 @@ func TestOfflinePackageBuild(t *testing.T) {
 	qualify := os.Getenv("WINFSP_PACKAGE_QUALIFY")
 	if qualify != "" && qualify != "1" {
 		t.Fatal("WINFSP_PACKAGE_QUALIFY must be empty or 1")
+	}
+	architectures := os.Getenv("WINFSP_PACKAGE_NATIVE_ARCHITECTURES")
+	if architectures == "" {
+		architectures = "both"
+	}
+	if architectures != "both" && architectures != "x64" && architectures != "x86" {
+		t.Fatal("invalid native architecture selection")
+	}
+	repeats := 0
+	if value := os.Getenv("WINFSP_PACKAGE_RDWR_REPEATS"); value != "" {
+		var err error
+		repeats, err = strconv.Atoi(value)
+		if err != nil || repeats < 0 || repeats > 100 {
+			t.Fatal("rdwr repetitions must be 0..100")
+		}
 	}
 	iso := os.Getenv("WINFSP_PACKAGE_EWDK_ISO")
 	if err := checkedFile(iso, os.Getenv("WINFSP_PACKAGE_EWDK_SHA256")); err != nil {
@@ -224,35 +287,75 @@ func TestOfflinePackageBuild(t *testing.T) {
 	defer func() {
 		collect, stop := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer stop()
-		r, e := node.ExecWithTimeout(collect, 2*time.Minute, powershell, "-NoProfile", "-Command", `$ErrorActionPreference='Stop'; Compress-Archive -Path C:\lab\output\* -DestinationPath C:\lab\package-results.zip; (Get-Item C:\lab\package-results.zip).Length`)
-		if e != nil || r.GetExitCode() != 0 {
-			t.Errorf("collect package results: %v %s", e, r.GetStderr())
-			return
-		}
-		length, e := strconv.Atoi(strings.TrimSpace(string(r.GetStdout())))
-		if e != nil || length <= 0 {
-			t.Error("invalid result size", e)
-			return
-		}
-		f, e := os.Create(filepath.Join(out, "results.zip"))
-		if e != nil {
-			t.Error(e)
-			return
-		}
-		defer f.Close()
-		for offset := 0; offset < length; offset += 262144 {
-			command := fmt.Sprintf(`$f=[IO.File]::OpenRead('C:\lab\package-results.zip');try{$null=$f.Seek(%d,0);$b=New-Object byte[] 262144;$n=$f.Read($b,0,$b.Length);[Convert]::ToBase64String($b,0,$n)}finally{$f.Dispose()}`, offset)
-			r, e := node.ExecWithTimeout(collect, time.Minute, powershell, "-NoProfile", "-Command", command)
+		// Collect small diagnostic evidence first. A later payload transfer
+		// failure must not strand all completed test logs inside a torn ZIP.
+		for _, archive := range []string{"evidence", "results"} {
+			guest := `C:\lab\package-` + archive + ".zip"
+			selection := `@(Get-ChildItem C:\lab\output -File | Where-Object {$_.Extension -notin @('.zip','.msi')} | ForEach-Object FullName)`
+			if archive == "results" {
+				selection = `@(Get-ChildItem C:\lab\output -File | ForEach-Object FullName)`
+			}
+			r, e := node.ExecWithTimeout(collect, 2*time.Minute, powershell, "-NoProfile", "-Command", fmt.Sprintf(`$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath %s -DestinationPath '%s'; (Get-Item '%s').Length`, selection, guest, guest))
 			if e != nil || r.GetExitCode() != 0 {
-				t.Error("artifact read", e)
+				t.Errorf("collect package results: %v %s", e, r.GetStderr())
 				return
 			}
-			b, e := base64.StdEncoding.DecodeString(strings.TrimSpace(string(r.GetStdout())))
-			if e != nil || len(b) != min(262144, length-offset) {
-				t.Error("artifact length", e)
+			length, e := strconv.Atoi(strings.TrimSpace(string(r.GetStdout())))
+			if e != nil || length <= 0 {
+				t.Error("invalid result size", e)
 				return
 			}
-			if _, e = f.Write(b); e != nil {
+			partial := filepath.Join(out, archive+".zip.partial")
+			f, e := os.Create(partial)
+			if e != nil {
+				t.Error(e)
+				return
+			}
+			defer f.Close()
+			for offset := 0; offset < length; offset += 262144 {
+				command := fmt.Sprintf(`$f=[IO.File]::OpenRead('%s');try{$null=$f.Seek(%d,0);$b=New-Object byte[] 262144;$n=$f.Read($b,0,$b.Length);[Convert]::ToBase64String($b,0,$n)}finally{$f.Dispose()}`, guest, offset)
+				b, e := packageChunk(collect, min(262144, length-offset), func() ([]byte, error) {
+					r, e := node.ExecWithTimeout(collect, time.Minute, powershell, "-NoProfile", "-Command", command)
+					if e != nil {
+						return nil, e
+					}
+					if r.GetExitCode() != 0 {
+						return nil, fmt.Errorf("artifact read exit=%d: %s", r.GetExitCode(), r.GetStderr())
+					}
+					return base64.StdEncoding.DecodeString(strings.TrimSpace(string(r.GetStdout())))
+				})
+				if e != nil {
+					t.Error("artifact read", archive, offset, e)
+					return
+				}
+				if _, e = f.Write(b); e != nil {
+					t.Error(e)
+					return
+				}
+			}
+			if e = f.Close(); e != nil {
+				t.Error(e)
+				return
+			}
+			z, e := zip.OpenReader(partial)
+			if e != nil {
+				t.Error("artifact ZIP structure", e)
+				return
+			}
+			for _, entry := range z.File {
+				r, err := entry.Open()
+				if err == nil {
+					_, err = io.Copy(io.Discard, r)
+					r.Close()
+				}
+				if err != nil {
+					z.Close()
+					t.Error("artifact ZIP CRC", entry.Name, err)
+					return
+				}
+			}
+			z.Close()
+			if e = os.Rename(partial, filepath.Join(out, archive+".zip")); e != nil {
 				t.Error(e)
 				return
 			}
@@ -277,6 +380,7 @@ func TestOfflinePackageBuild(t *testing.T) {
 		for _, phase := range []string{"install", "run"} {
 			t.Log("qualifying actual MSI:", phase)
 			command := fmt.Sprintf(`$ErrorActionPreference='Stop';$disc=@(Get-Volume | Where-Object FileSystemLabel -eq PKGINPUTS);if($disc.Count -ne 1){throw 'package input disc missing'};$inputRoot=$disc[0].DriveLetter+':\';& ($inputRoot+'qualify-msi.ps1') -Phase %s -Token %s -InputsDirectory $inputRoot`, phase, filepath.Base(out))
+			command += fmt.Sprintf(" -Architectures %s -RdwrRepeats %d", architectures, repeats)
 			r, e := node.ExecWithTimeout(ctx, 40*time.Minute, powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command)
 			result := string(r.GetStdout()) + string(r.GetStderr())
 			write("qualification-"+phase+"-command.txt", []byte(fmt.Sprintf("error=%v\nexit=%d\n%s", e, r.GetExitCode(), result)))

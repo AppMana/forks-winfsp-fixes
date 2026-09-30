@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory)][ValidateSet('install','run')][string]$Phase,
     [Parameter(Mandatory)][string]$Token,
-    [Parameter(Mandatory)][string]$InputsDirectory
+    [Parameter(Mandatory)][string]$InputsDirectory,
+    [ValidateSet('both','x64','x86')][string]$Architectures='both',
+    [ValidateRange(0,100)][int]$RdwrRepeats=0
 )
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot\inputs.ps1"
@@ -69,7 +71,9 @@ try {
         $drivers=@(Get-CimInstance Win32_SystemDriver | Where-Object {$_.Name -like 'WinFsp*' -and $_.State -eq 'Running'})
         if($drivers.Count -ne 1 -or $drivers[0].Name -ne $identity.Name -or $drivers[0].PathName.Trim('"') -notin @($identity.Path,('\??\'+$identity.Path))){throw 'Wrong installed driver running'}
         $drivers | Select-Object Name,State,PathName | ConvertTo-Json | Set-Content "$out\installed-driver.json"
-        foreach($arch in @('x64','x86')) {
+        $arches=if($Architectures -eq 'both'){@('x64','x86')}else{@($Architectures)}
+        @{architectures=@($arches);rdwr_repeats=$RdwrRepeats;full_suite=$true} | ConvertTo-Json | Set-Content "$out\native-plan.json"
+        foreach($arch in $arches) {
             # Do not copy a candidate DLL beside the test: load the MSI-installed DLL.
             $runner="C:\lab\msi-test-$arch"
             New-Item $runner -ItemType Directory | Out-Null
@@ -78,9 +82,21 @@ try {
             Assert-PinnedFile $exe $manifest.payload.files."winfsp-tests-$arch.exe"
             $env:PATH="$bin;"+$env:PATH
             $env:WINFSP_TESTS_EXPECT_DLL="$bin\winfsp-$arch.dll"
+            Set-Location $runner
+            for($iteration=1;$iteration -le $RdwrRepeats;$iteration++) {
+                foreach($control in @('ntfs','winfsp')) {
+                    $arguments=@('rdwr_noncached_test')
+                    if($control -eq 'ntfs'){$arguments=@('--ntfs')+$arguments}
+                    $label="rdwr-$arch-$control-$iteration"
+                    $exit=Invoke-NativeLabProcess $exe $arguments "$out\$label.log" "$out\$label.stderr.txt"
+                    @{exit=$exit;arguments=$arguments;iteration=$iteration;control=$control} | ConvertTo-Json | Set-Content "$out\$label.json"
+                    Assert-NativeSuiteEvidence @('rdwr_noncached_test') (Get-Content "$out\$label.log" -Raw) $exit
+                }
+            }
             $inventory=Invoke-NativeLabProcess $exe @('--list','+*') "$out\inventory-$arch.txt" "$out\inventory-$arch.stderr.txt"
             if($inventory -ne 0){throw 'Installed native inventory failed'}
             $exit=Invoke-NativeLabProcess $exe @('+*') "$out\native-$arch.log" "$out\native-$arch.stderr.txt"
+            @{inventory_exit=$inventory;test_exit=$exit;arguments=@('+*')} | ConvertTo-Json | Set-Content "$out\native-$arch.json"
             if(@(Get-Content "$out\native-$arch.stderr.txt" | Where-Object {$_ -ceq "WINFSP_TEST_DLL:$bin\winfsp-$arch.dll"}).Count -ne 1){throw 'Installed DLL attestation missing'}
             if((Get-Content "$out\native-$arch.stderr.txt" -Raw) -match ': need (Administrator|SE_CREATE_SYMBOLIC_LINK_PRIVILEGE)'){throw 'Native suite skipped privilege checks'}
             Assert-NativeSuiteEvidence @(Get-Content "$out\inventory-$arch.txt") (Get-Content "$out\native-$arch.log" -Raw) $exit
