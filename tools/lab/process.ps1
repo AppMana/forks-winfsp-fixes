@@ -10,15 +10,24 @@ function Invoke-NativeLabProcess {
     $p.StartInfo.CreateNoWindow=$true
     $p.StartInfo.RedirectStandardOutput=$true
     $p.StartInfo.RedirectStandardError=$true
+    $stdoutFile=$null; $stderrFile=$null
     try {
+        # Drain both pipes continuously to readable, unbuffered files. Waiting
+        # for exit before writing logs hides progress and crash evidence.
+        $stdoutFile=[IO.FileStream]::new($StdoutPath,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite,1,[IO.FileOptions]::Asynchronous)
+        $stderrFile=[IO.FileStream]::new($StderrPath,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite,1,[IO.FileOptions]::Asynchronous)
         if(-not $p.Start()){throw 'Native process did not start'}
-        $stdout=$p.StandardOutput.ReadToEndAsync()
-        $stderr=$p.StandardError.ReadToEndAsync()
+        $stdout=$p.StandardOutput.BaseStream.CopyToAsync($stdoutFile)
+        $stderr=$p.StandardError.BaseStream.CopyToAsync($stderrFile)
         $finished=$p.WaitForExit($TimeoutMillis)
         if(-not $finished){$p.Kill(); $p.WaitForExit()}
-        [IO.File]::WriteAllText($StdoutPath,$stdout.GetAwaiter().GetResult())
-        [IO.File]::WriteAllText($StderrPath,$stderr.GetAwaiter().GetResult())
+        $null=$stdout.GetAwaiter().GetResult(); $stdoutFile.Flush()
+        $null=$stderr.GetAwaiter().GetResult(); $stderrFile.Flush()
         if(-not $finished){throw 'Native suite timed out'}
         return $p.ExitCode
-    } finally { $p.Dispose() }
+    } finally {
+        if($stdoutFile){$stdoutFile.Dispose()}
+        if($stderrFile){$stderrFile.Dispose()}
+        $p.Dispose()
+    }
 }

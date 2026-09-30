@@ -36,7 +36,15 @@ jobs:
         run: ./tools/package/inputs-test.ps1
       - name: Verify ranged toolchain download checks
         run: python -m unittest discover -s tools/package -p test_fetch_ewdk.py -v
+      - name: Check native log streaming and evidence interpretation
+        shell: pwsh
+        run: |
+          ./tools/lab/process-test.ps1
+          ./tools/lab/evidence-test.ps1
       - name: Test with the Windows PowerShell used by the guest harness
         if: runner.os == 'Windows'
         shell: powershell
-        run: ./tools/package/inputs-test.ps1
+        run: |
+          ./tools/package/inputs-test.ps1
+          ./tools/lab/process-test.ps1
+          ./tools/lab/evidence-test.ps1

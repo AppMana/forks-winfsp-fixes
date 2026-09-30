@@ -9,6 +9,23 @@ try {
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     $code=Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 30000
     if($code -ne 23 -or [IO.File]::ReadAllText($out) -cne 'stdout-proof' -or [IO.File]::ReadAllText($err) -cne 'stderr-proof'){throw 'Lost process status or output'}
+    # The child observes its own redirected output before it exits. Buffering
+    # until process termination cannot satisfy this check.
+    [IO.File]::WriteAllText($out,'')
+    $quoted=$out.Replace("'","''")
+    $script=@'
+[Console]::Out.Write('live-proof');[Console]::Out.Flush()
+for($i=0;$i -lt 40;$i++) {
+    $file=[IO.File]::Open('__LOG_PATH__',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    $reader=[IO.StreamReader]::new($file)
+    try {if($reader.ReadToEnd().Contains('live-proof')){exit 0}} finally {$reader.Dispose()}
+    Start-Sleep -Milliseconds 50
+}
+exit 31
+'@
+    $script=$script.Replace('__LOG_PATH__',$quoted)
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    if((Invoke-NativeLabProcess $exe @('-NoProfile','-EncodedCommand',$encoded) $out $err 30000) -ne 0){throw 'Native logs are invisible while the process is running'}
     # Preserve the exact regression inventory when prepending --list. This
     # also guards against accidentally dropping the network projection RED.
     $selection=@('reparse_mount_target_test','reparse_net_projected_target_test')
