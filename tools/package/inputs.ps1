@@ -1,4 +1,16 @@
 Set-StrictMode -Version Latest
+function Select-MsiManagedTarget([string]$Path) {
+    [xml]$project=[IO.File]::ReadAllText($Path)
+    $targets=$project.SelectNodes('/Project/PropertyGroup/TargetFrameworks')
+    if($targets.Count -ne 1 -or $targets[0].InnerText -cne 'netstandard2.0;net35') {
+        throw 'Expected the upstream dual-target WinFsp binding project; refusing to retarget another project'
+    }
+    # The upstream MSI consumes the net35 output. The separate netstandard
+    # NuGet product is not built here. Never pass this as a global property:
+    # that also changes the net452 sample restore graph to net35 (NETSDK1005).
+    $targets[0].InnerText='net35'
+    $project.Save($Path)
+}
 function Assert-PinnedFile([string]$Path,[string]$Sha256) {
     if($Sha256 -cnotmatch '^[0-9a-f]{64}$' -or -not(Test-Path -LiteralPath $Path -PathType Leaf) -or
         (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ine $Sha256) {throw "Input digest mismatch: $Path"}

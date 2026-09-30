@@ -105,6 +105,16 @@ try {
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payload 'payload.json')
     Reject {Assert-PackagePayload $payload ('a'*40) '2.2.26271' ('c'*64)}
     $repository=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    $managed=Join-Path $root 'winfsp.net.csproj'
+    Copy-Item (Join-Path $repository 'build/VStudio/dotnet/winfsp.net.csproj') $managed
+    Select-MsiManagedTarget $managed
+    [xml]$managedXml=Get-Content $managed -Raw
+    if($managedXml.SelectSingleNode('/Project/PropertyGroup/TargetFrameworks').InnerText -cne 'net35') {throw 'MSI binding target not selected'}
+    $sample=Join-Path $repository 'build/VStudio/testing/memfs-dotnet.csproj'
+    $sampleHash=(Get-FileHash $sample).Hash
+    Reject {Select-MsiManagedTarget $sample}
+    if((Get-FileHash $sample).Hash -cne $sampleHash){throw 'Sample framework changed'}
+    if([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'build-payload.ps1')).Contains('/p:TargetFrameworks=')){throw 'Global framework override breaks the net452 sample restore'}
     foreach($arch in @('x86','x64','a64')) {
         Assert-CoffLibraryMachine (Join-Path $repository "opt/fsext/lib/winfsp-$arch.lib") (@{x86=0x14c;x64=0x8664;a64=0xaa64}[$arch])
     }
@@ -128,8 +138,10 @@ try {
     if($before.Wix.Product.UpgradeCode -cne $after.Wix.Product.UpgradeCode -or
         $before.SelectNodes('//*[local-name()="File"]').Count -ne $after.SelectNodes('//*[local-name()="File"]').Count){throw 'Upstream package identity or payload changed'}
     Reject {Add-LabInstallerGuards $product}
-    $tokens=$null; $errors=$null
-    $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'build-msi.ps1'),[ref]$tokens,[ref]$errors)
-    if($errors.Count){throw ($errors | Out-String)}
+    foreach($script in @('build-msi.ps1','build-payload.ps1')) {
+        $tokens=$null; $errors=$null
+        $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $script),[ref]$tokens,[ref]$errors)
+        if($errors.Count){throw ($errors | Out-String)}
+    }
     'PACKAGE_INPUT_CONTRACTS_PASS'
 } finally {Remove-Item -LiteralPath $root -Recurse -Force}

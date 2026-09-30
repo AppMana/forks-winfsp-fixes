@@ -140,6 +140,40 @@ do not substitute stock binaries and label them as built from the patched
 revision. Package-input contract tests validate rejection and archive handling,
 not successful MSI assembly, installation or filesystem behavior.
 
+The complete offline build has a separate opt-in entry point in the same native
+Labcontainers harness. It does not reinstall drivers or repeat filesystem suites:
+
+```sh
+export WINFSP_PACKAGE_LIVE=1
+export WINFSP_PACKAGE_EWDK_ISO=/absolute/cache/EWDK-19041-package.iso
+export WINFSP_PACKAGE_EWDK_SHA256=1bd011404cc16c912463fa103cedc1793f9b55f9977ab355ce98ae89c075d841
+export WINFSP_PACKAGE_INPUT_ROOT=/absolute/cache/inputs
+# Use the matched LABCONTAINERS_LABD, LABCONTAINERS_WINDOWS_IMAGE and
+# persistent RUNNER_TEMP variables from the native harness example above.
+cd tools/lab
+GOWORK=off go test -v -count=1 -run '^TestOfflinePackageBuild$' -timeout=85m
+```
+
+The input root contains `wix/wix314-binaries.zip` and, under `dotnet/`, the SDK
+and three reference packages named and pinned in `tools/package/inputs.json`.
+The SDK is Microsoft's Windows x64 .NET 8.0.425 archive; reference packages are
+NuGet `Microsoft.NETFramework.ReferenceAssemblies`, `.net35` and `.net452`,
+version 1.0.3. The MSI uses the upstream net35 binding; the separately shipped
+netstandard NuGet package is not an MSI input. No online restore is permitted by
+the VM topology. `build-payload.ps1` builds all native architectures, the managed
+components and upstream installer, signing the drivers with a fresh **lab-only**
+certificate. Outputs, logs, source archive and input identities are retained;
+the owned VM is removed after artifact collection. Building an MSI does not
+qualify its installation or make it production-signed.
+
+`tools/package/fetch-ewdk.py --output /absolute/cache/EWDK-19041-package.iso
+--sha256 1bd011404cc16c912463fa103cedc1793f9b55f9977ab355ce98ae89c075d841`
+fetches the official 19041 EWDK with bounded parallel ranges. It refuses existing
+output/partial files and validates the pinned digest before promotion. The pin
+was recorded from an HTTPS acquisition of Microsoft's ISO, not a claimed
+Microsoft-published checksum. A first-acquisition mode exists only to bootstrap
+a newly reviewed pin; its manifest explicitly distinguishes observed hashes.
+
 ## Overview
 
 WinFsp is a platform that provides development and runtime support for custom file systems on Windows computers. Typically any information or storage may be organized and presented as a file system via WinFsp, with the benefit being that the information can be accessed via the standand Windows file API’s by any Windows application.

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "files": {
+    "dotnet-sdk-8.0.425-win-x64.zip": "cd6eb1df826dd168108e2c427673f9d627b7e0631963eeedf0fa7aef0913c53f",
+    "microsoft.netframework.referenceassemblies.1.0.3.nupkg": "141a093f90c7645d101ccd312e6f727781c965540eb92a52280f95411a698441",
+    "microsoft.netframework.referenceassemblies.net35.1.0.3.nupkg": "b16156111a88670d91a757fbd465fcb4856e034b1a4d523ae2c41a470f3578f9",
+    "microsoft.netframework.referenceassemblies.net452.1.0.3.nupkg": "4533ee146f03ee09f020d12812d02a9959b8a135bc2b867ceefd68e030de2cc2",
+    "wix314-binaries.zip": "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31"
+  }
+}
