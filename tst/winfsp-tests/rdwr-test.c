@@ -28,6 +28,28 @@
 
 #include "winfsp-tests.h"
 
+static void rdwr_assert_deleted(PWSTR FilePath)
+{
+    DWORD Start = GetTickCount();
+    for (;;)
+    {
+        HANDLE Handle = CreateFileW(FilePath,
+            GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
+            OPEN_EXISTING, 0, 0);
+        DWORD Error = GetLastError();
+        /* Deletion must prevent reopening throughout, not just at the deadline. */
+        ASSERT(INVALID_HANDLE_VALUE == Handle);
+        if (ERROR_FILE_NOT_FOUND == Error)
+            return;
+        /* A metadata observer (e.g. antivirus) can retain the delete-pending
+         * file after our final close, on NTFS as well as WinFsp. Require actual
+         * removal; persistent denial and every other error still fail. */
+        ASSERT(ERROR_ACCESS_DENIED == Error);
+        ASSERT((DWORD)(GetTickCount() - Start) < 10000);
+        Sleep(10);
+    }
+}
+
 static void rdwr_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, ULONG FileInfoTimeout, DWORD CreateFlags)
 {
     void *memfs = memfs_start_ex(Flags, FileInfoTimeout);
@@ -194,11 +216,7 @@ static void rdwr_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, ULONG FileIn
     Success = CloseHandle(Handle);
     ASSERT(Success);
 
-    Handle = CreateFileW(FilePath,
-        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
-        OPEN_EXISTING, 0, 0);
-    ASSERT(INVALID_HANDLE_VALUE == Handle);
-    ASSERT(ERROR_FILE_NOT_FOUND == GetLastError());
+    rdwr_assert_deleted(FilePath);
 
     _aligned_free(AllocBuffer[0]);
     _aligned_free(AllocBuffer[1]);
@@ -278,11 +296,7 @@ static void rdwr_append_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, ULONG
     Success = CloseHandle(Handle);
     ASSERT(Success);
 
-    Handle = CreateFileW(FilePath,
-        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
-        OPEN_EXISTING, 0, 0);
-    ASSERT(INVALID_HANDLE_VALUE == Handle);
-    ASSERT(ERROR_FILE_NOT_FOUND == GetLastError());
+    rdwr_assert_deleted(FilePath);
 
     _aligned_free(AllocBuffer[0]);
     _aligned_free(AllocBuffer[1]);
@@ -467,11 +481,7 @@ static void rdwr_overlapped_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, U
     Success = CloseHandle(Handle);
     ASSERT(Success);
 
-    Handle = CreateFileW(FilePath,
-        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0,
-        OPEN_EXISTING, 0, 0);
-    ASSERT(INVALID_HANDLE_VALUE == Handle);
-    ASSERT(ERROR_FILE_NOT_FOUND == GetLastError());
+    rdwr_assert_deleted(FilePath);
 
     Success = CloseHandle(Overlapped.hEvent);
     ASSERT(Success);

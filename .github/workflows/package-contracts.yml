@@ -17,8 +17,8 @@ jobs:
         with:
           go-version-file: tools/lab/go.mod
           cache-dependency-path: tools/lab/go.sum
-      - name: Verify native readback comparisons reject corrupted bytes
-        run: python3 -m unittest discover -s tools/lab -p test_rdwr_oracle.py -v
+      - name: Verify native readback and deletion assertions
+        run: python3 -m unittest discover -s tools/lab -p 'test_rdwr_*.py' -v
       - name: Check harness and cached-payload compatibility without starting VMs
         working-directory: tools/lab
         env:
