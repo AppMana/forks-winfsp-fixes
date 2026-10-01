@@ -140,7 +140,7 @@ static void rdwr_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, ULONG FileIn
     ASSERT(0 == memcmp(Buffer[0], Buffer[1], BytesTransferred));
 
     Buffer[0] = AllocBuffer[0];
-    Buffer[1] = AllocBuffer[0];
+    Buffer[1] = AllocBuffer[1];
 
     FilePointer = SetFilePointer(Handle, 0, 0, FILE_BEGIN);
     ASSERT(0 == FilePointer);
@@ -411,7 +411,7 @@ static void rdwr_overlapped_dotest(ULONG Flags, PWSTR VolPrefix, PWSTR Prefix, U
     ASSERT(0 == memcmp(Buffer[0], Buffer[1], BytesTransferred));
 
     Buffer[0] = AllocBuffer[0];
-    Buffer[1] = AllocBuffer[0];
+    Buffer[1] = AllocBuffer[1];
 
     Overlapped.Offset = 0;
     Success = WriteFile(Handle, Buffer[0], 2 * SystemInfo.dwPageSize, &BytesTransferred, &Overlapped);
