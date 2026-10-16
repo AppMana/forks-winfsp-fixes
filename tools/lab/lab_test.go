@@ -28,8 +28,8 @@ import (
 
 const ewdkSHA = "9f48251dd24ad31aac206d8256e95bda5f90a9783982c45a8aafeb9054562379"
 const msiSHA = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
-const helperRevision = "1e16650971a8d0307e465e75fdc047606165bbe7"
-const helperSHA = "3712e30d5202228d164b7815a9d48452a72bbb48c74b99ade4c558f4aaf66f44"
+const helperRevision = "816233a73e220494c0b5601d4531a4ca903f0205"
+const helperSHA = "ea7bfeafc4195d7a43a8c0c8e1ae53448a9183141af7c8b208398f6782d716d9"
 const powershell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 const observerCacheSHA = "3bbc30a59fb551e0caccc77344e92672096aaf7859bdc3dd94a505062615a9fe"
 const observerCacheRevision = "b5c3c595c306a4b8d319e507bb80a6c0ac3007ad"

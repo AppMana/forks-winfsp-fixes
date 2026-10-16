@@ -38,7 +38,7 @@ export WINFSP_LAB_LIVE=1
 export WINFSP_LAB_EWDK_ISO=/absolute/path/EWDK_ge_release_svc_prod1_26100_250904-1728.iso
 export SEAWEEDFS_WINFSP_MSI=/absolute/path/winfsp-2.1.25156.msi
 export LABCONTAINERS_LABD=/absolute/path/matched/labd
-export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:csi-1e16650
+export LABCONTAINERS_WINDOWS_IMAGE=labcontainers/windows-server-2022:csi-816233a
 export RUNNER_TEMP=/absolute/path/persistent-results
 cd tools/lab
 GOWORK=off go test -v -count=1 -run '^TestNativeWindows$' -timeout=120m
@@ -79,7 +79,7 @@ target-classification RED. It never treats an ordinary test pass or a failure
 before the observer callback as reproduction evidence.
 
 The SDK, daemon and image guest helper must all match
-`1e16650971a8d0307e465e75fdc047606165bbe7`; do not use the old alpha.2 daemon.
+`816233a73e220494c0b5601d4531a4ca903f0205`; do not use the old alpha.2 daemon.
 The EWDK and MSI hashes are enforced in `tools/lab/lab_test.go`. Build the
 daemon from that clean SDK checkout with `go build -o /absolute/path/labd ./cmd/labd`.
 The Windows image and `alpine:3.20` peer must already exist locally. Guests
