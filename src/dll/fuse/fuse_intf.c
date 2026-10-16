@@ -595,15 +595,26 @@ exit:
     return Result;
 }
 
+/* "X:/rest": an absolute drive-letter target kept as written (see SetReparsePoint) */
+static BOOLEAN fsp_fuse_intf_IsPosixDriveTarget(const char *PosixTargetPath)
+{
+    return
+        (('A' <= PosixTargetPath[0] && 'Z' >= PosixTargetPath[0]) ||
+            ('a' <= PosixTargetPath[0] && 'z' >= PosixTargetPath[0])) &&
+        ':' == PosixTargetPath[1] && '/' == PosixTargetPath[2];
+}
+
 static NTSTATUS fsp_fuse_intf_GetReparsePointSymlink(FSP_FILE_SYSTEM *FileSystem,
-    const char *PosixPath, PVOID Buffer, PSIZE_T PSize)
+    const char *PosixPath, PVOID Buffer, PSIZE_T PSize, PBOOLEAN PAbsolute)
 {
     struct fuse *f = FileSystem->UserContext;
     char PosixTargetPath[FSP_FSCTL_TRANSACT_PATH_SIZEMAX / sizeof(WCHAR)];
     PWSTR TargetPath = 0;
-    ULONG TargetPathLength;
+    ULONG TargetPathLength, PrefixLength = 0;
     int err;
     NTSTATUS Result;
+
+    *PAbsolute = FALSE;
 
     err = f->ops.readlink(PosixPath, PosixTargetPath, sizeof PosixTargetPath);
     if (-EINVAL/* same on MSVC and Cygwin */ == err)
@@ -628,18 +639,32 @@ static NTSTATUS fsp_fuse_intf_GetReparsePointSymlink(FSP_FILE_SYSTEM *FileSystem
         }
     }
 
-    Result = FspPosixMapPosixToWindowsPath(PosixTargetPath, &TargetPath);
+    if (fsp_fuse_intf_IsPosixDriveTarget(PosixTargetPath))
+    {
+        /* "X:/rest" reads back as the absolute \??\X:\rest */
+        Result = FspPosixMapPosixToWindowsPath(PosixTargetPath + 2, &TargetPath);
+        PrefixLength = 6 * sizeof(WCHAR);
+        *PAbsolute = TRUE;
+    }
+    else
+        Result = FspPosixMapPosixToWindowsPath(PosixTargetPath, &TargetPath);
     if (!NT_SUCCESS(Result))
         goto exit;
 
     TargetPathLength = lstrlenW(TargetPath) * sizeof(WCHAR);
-    if (TargetPathLength > *PSize)
+    if (PrefixLength + TargetPathLength > *PSize)
     {
         Result = STATUS_BUFFER_TOO_SMALL;
         goto exit;
     }
-    *PSize = TargetPathLength;
-    memcpy(Buffer, TargetPath, TargetPathLength);
+    *PSize = PrefixLength + TargetPathLength;
+    if (0 != PrefixLength)
+    {
+        PWSTR Prefix = Buffer;
+        Prefix[0] = L'\\', Prefix[1] = L'?', Prefix[2] = L'?', Prefix[3] = L'\\';
+        Prefix[4] = (WCHAR)PosixTargetPath[0], Prefix[5] = L':';
+    }
+    memcpy((PUINT8)Buffer + PrefixLength, TargetPath, TargetPathLength);
 
     Result = STATUS_SUCCESS;
 
@@ -660,6 +685,7 @@ static NTSTATUS fsp_fuse_intf_GetReparsePointEx(FSP_FILE_SYSTEM *FileSystem,
     PREPARSE_DATA_BUFFER ReparseData;
     USHORT ReparseDataLength;
     SIZE_T Size;
+    BOOLEAN Absolute;
     NTSTATUS Result;
 
     if (0 != PResolveFileAttributes && FILE_ATTRIBUTE_REPARSE_POINT == PResolveFileAttributes[0])
@@ -762,16 +788,26 @@ skip_getattr:
         Size = *PSize -
             FIELD_OFFSET(REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer.PathBuffer);
         Result = fsp_fuse_intf_GetReparsePointSymlink(FileSystem, PosixPath,
-            ReparseData->SymbolicLinkReparseBuffer.PathBuffer, &Size);
+            ReparseData->SymbolicLinkReparseBuffer.PathBuffer, &Size, &Absolute);
         if (!NT_SUCCESS(Result))
             return Result;
 
         ReparseData->ReparseDataLength += (USHORT)Size;
         ReparseData->SymbolicLinkReparseBuffer.SubstituteNameOffset = 0;
         ReparseData->SymbolicLinkReparseBuffer.SubstituteNameLength = (USHORT)Size;
-        ReparseData->SymbolicLinkReparseBuffer.PrintNameOffset = 0;
-        ReparseData->SymbolicLinkReparseBuffer.PrintNameLength = (USHORT)Size;
-        ReparseData->SymbolicLinkReparseBuffer.Flags = SYMLINK_FLAG_RELATIVE;
+        if (Absolute)
+        {
+            /* print name is the substitute name without its \??\ prefix */
+            ReparseData->SymbolicLinkReparseBuffer.PrintNameOffset = 4 * sizeof(WCHAR);
+            ReparseData->SymbolicLinkReparseBuffer.PrintNameLength = (USHORT)(Size - 4 * sizeof(WCHAR));
+            ReparseData->SymbolicLinkReparseBuffer.Flags = 0;
+        }
+        else
+        {
+            ReparseData->SymbolicLinkReparseBuffer.PrintNameOffset = 0;
+            ReparseData->SymbolicLinkReparseBuffer.PrintNameLength = (USHORT)Size;
+            ReparseData->SymbolicLinkReparseBuffer.Flags = SYMLINK_FLAG_RELATIVE;
+        }
         break;
 
     default:
@@ -2391,6 +2427,28 @@ static UINT16 fsp_fuse_intf_DirectoryMountTarget(FSP_FILE_SYSTEM *FileSystem,
     return (UINT16)((4 + MountLength) * sizeof(WCHAR));
 }
 
+/*
+ * A container sees this volume at a path of its own (C:\data) that neither the
+ * driver nor this process can map back to the volume, so an absolute
+ * drive-letter target that is not provably ours is kept as written, the way
+ * NTFS keeps any absolute target, and is resolved by whoever follows the link.
+ * It is stored as the FUSE target "X:/rest", which no volume-relative ("/...")
+ * or relative target produced by this file system can spell, and is read back
+ * as the absolute \??\X:\rest. Other absolute forms (UNC, volume GUID) stay
+ * denied. Returns the drive letter, or 0.
+ */
+static WCHAR fsp_fuse_intf_DriveTarget(PWSTR TargetPath, SIZE_T TargetPathLength)
+{
+    if (7 * sizeof(WCHAR) > TargetPathLength ||
+        L'\\' != TargetPath[0] || L'?' != TargetPath[1] || L'?' != TargetPath[2] ||
+        L'\\' != TargetPath[3] ||
+        !((L'A' <= TargetPath[4] && L'Z' >= TargetPath[4]) ||
+            (L'a' <= TargetPath[4] && L'z' >= TargetPath[4])) ||
+        L':' != TargetPath[5] || L'\\' != TargetPath[6])
+        return 0;
+    return TargetPath[4];
+}
+
 static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
     PVOID FileDesc,
     PWSTR FileName, PVOID Buffer, SIZE_T Size)
@@ -2405,6 +2463,8 @@ static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
     PWSTR ReparseTargetPath;
     SIZE_T ReparseTargetPathLength;
     WCHAR TargetPath[FSP_FSCTL_TRANSACT_PATH_SIZEMAX / sizeof(WCHAR)];
+    char DriveTargetPath[FSP_FSCTL_TRANSACT_PATH_SIZEMAX / sizeof(WCHAR)];
+    WCHAR DriveLetter = 0;
     char *PosixTargetPath = 0, *PosixHiddenPath = 0;
     BOOLEAN IsSymlink;
     int err;
@@ -2482,9 +2542,14 @@ static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
                     TargetOnFileSystem = fsp_fuse_intf_DirectoryMountTarget(FileSystem,
                         ReparseTargetPath, ReparseTargetPathLength);
 
-                /* we do not support absolute paths that point outside this file system */
+                /* keep a drive-letter target we cannot place as written; deny other forms */
                 if (0 == TargetOnFileSystem)
-                    return STATUS_ACCESS_DENIED;
+                {
+                    DriveLetter = fsp_fuse_intf_DriveTarget(ReparseTargetPath, ReparseTargetPathLength);
+                    if (0 == DriveLetter)
+                        return STATUS_ACCESS_DENIED;
+                    TargetOnFileSystem = 6 * sizeof(WCHAR);
+                }
 
                 ReparseTargetPath += TargetOnFileSystem / sizeof(WCHAR);
                 ReparseTargetPathLength -= TargetOnFileSystem;
@@ -2509,12 +2574,25 @@ static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
         if (!NT_SUCCESS(Result))
             goto exit;
 
+        if (0 != DriveLetter)
+        {
+            /* "\rest" became "/rest"; store "X:/rest" */
+            SIZE_T PosixTargetLength = lstrlenA(PosixTargetPath);
+            if (2 + PosixTargetLength + 1 > sizeof DriveTargetPath)
+            {
+                Result = STATUS_OBJECT_NAME_INVALID;
+                goto exit;
+            }
+            DriveTargetPath[0] = (char)DriveLetter, DriveTargetPath[1] = ':';
+            memcpy(DriveTargetPath + 2, PosixTargetPath, PosixTargetLength + 1);
+        }
+
         Result = fsp_fuse_intf_NewHiddenName(FileSystem, filedesc->PosixPath, &PosixHiddenPath);
         if (!NT_SUCCESS(Result))
             goto exit;
 
         context->uid = Uid, context->gid = Gid;
-        err = f->ops.symlink(PosixTargetPath, PosixHiddenPath);
+        err = f->ops.symlink(0 != DriveLetter ? DriveTargetPath : PosixTargetPath, PosixHiddenPath);
         context->uid = -1, context->gid = -1;
         if (0 != err)
         {
