@@ -2337,6 +2337,60 @@ static NTSTATUS fsp_fuse_intf_GetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
         Buffer, PSize, 0);
 }
 
+/*
+ * The signed driver proves an absolute symlink target on this volume only when
+ * the target's device is ours (drive letter, volume GUID, UNC prefix). Through a
+ * directory mount point it sees the host disk and reports 0. Accept such a
+ * target when it is spelled through this file system's own directory mount
+ * point: \??\<mount point>\<at least one component>. Aliases are not followed,
+ * so they stay denied, as do "." and ".." components (FSCTL input is not
+ * normalized), the exact root, and siblings that merely share the prefix.
+ * Returns the byte offset of the volume-relative remainder, or 0.
+ */
+static UINT16 fsp_fuse_intf_DirectoryMountTarget(FSP_FILE_SYSTEM *FileSystem,
+    PWSTR TargetPath, SIZE_T TargetPathLength)
+{
+    PWSTR MountPoint = FspFileSystemMountPoint(FileSystem);
+    SIZE_T MountLength, Length = TargetPathLength / sizeof(WCHAR), I, Start, End;
+
+    if (0 == MountPoint)
+        return 0;
+    if (L'\\' == MountPoint[0] && L'\\' == MountPoint[1] &&
+        (L'.' == MountPoint[2] || L'?' == MountPoint[2]) && L'\\' == MountPoint[3])
+        MountPoint += 4;
+    MountLength = lstrlenW(MountPoint);
+    /* drive-letter mounts are the driver's own case; only X:\dir... here */
+    if (4 > MountLength || L':' != MountPoint[1] || L'\\' != MountPoint[2] ||
+        L'\\' == MountPoint[MountLength - 1])
+        return 0;
+
+    if (4 + MountLength + 1 >= Length ||
+        L'\\' != TargetPath[0] || L'?' != TargetPath[1] || L'?' != TargetPath[2] ||
+        L'\\' != TargetPath[3] ||
+        0 != invariant_wcsnicmp(TargetPath + 4, MountPoint, MountLength) ||
+        L'\\' != TargetPath[4 + MountLength])
+        return 0;
+
+    /* TargetPath[I] is a separator; check each component after it */
+    for (I = 4 + MountLength; Length > I; I = End)
+    {
+        Start = I + 1;
+        for (End = Start; Length > End && L'\\' != TargetPath[End]; End++)
+            ;
+        if (Start == End)
+        {
+            if (Length == Start && 4 + MountLength != I)
+                break; /* one trailing separator */
+            return 0;
+        }
+        if ((1 == End - Start && L'.' == TargetPath[Start]) ||
+            (2 == End - Start && L'.' == TargetPath[Start] && L'.' == TargetPath[Start + 1]))
+            return 0;
+    }
+
+    return (UINT16)((4 + MountLength) * sizeof(WCHAR));
+}
+
 static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
     PVOID FileDesc,
     PWSTR FileName, PVOID Buffer, SIZE_T Size)
@@ -2422,13 +2476,18 @@ static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
                 ReparseTargetPathLength >= sizeof(WCHAR) && L'\\' == ReparseTargetPath[0])
             {
                 FSP_FSCTL_TRANSACT_REQ *Request = FspFileSystemGetOperationContext()->Request;
+                UINT16 TargetOnFileSystem = Request->Req.FileSystemControl.TargetOnFileSystem;
+
+                if (0 == TargetOnFileSystem)
+                    TargetOnFileSystem = fsp_fuse_intf_DirectoryMountTarget(FileSystem,
+                        ReparseTargetPath, ReparseTargetPathLength);
 
                 /* we do not support absolute paths that point outside this file system */
-                if (0 == Request->Req.FileSystemControl.TargetOnFileSystem)
+                if (0 == TargetOnFileSystem)
                     return STATUS_ACCESS_DENIED;
 
-                ReparseTargetPath += Request->Req.FileSystemControl.TargetOnFileSystem / sizeof(WCHAR);
-                ReparseTargetPathLength -= Request->Req.FileSystemControl.TargetOnFileSystem;
+                ReparseTargetPath += TargetOnFileSystem / sizeof(WCHAR);
+                ReparseTargetPathLength -= TargetOnFileSystem;
             }
         }
         else
