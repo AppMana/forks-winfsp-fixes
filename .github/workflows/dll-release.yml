@@ -1,0 +1,61 @@
+name: dll-release
+# Builds the user-mode winfsp-x64.dll for use with the stock, signed WinFsp 2.1
+# driver and publishes it, with its SHA-256, as a release of the pushed tag.
+# Consumers place it next to their executable so it is loaded instead of the
+# installed DLL; the kernel driver is never rebuilt or replaced here.
+on:
+  push:
+    tags: ['appmana-dll-*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build winfsp-x64.dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found' }
+          & $msbuild build\VStudio\winfsp_dll.vcxproj /m /nr:false /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$PWD\build\VStudio\\"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem -Recurse -File -Filter winfsp-x64.dll build\VStudio\build)
+          if ($dll.Count -ne 1) { throw "expected one winfsp-x64.dll, found $($dll.Count)" }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $dll[0].FullName out\winfsp-x64.dll
+          $hash = (Get-FileHash out\winfsp-x64.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  winfsp-x64.dll" | Set-Content -Encoding ascii out\winfsp-x64.dll.sha256
+          Write-Output "winfsp-x64.dll sha256=$hash source=$env:GITHUB_SHA"
+      - name: Load it against the stock signed driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Join-Path $env:RUNNER_TEMP 'winfsp-2.1.25156.msi'
+          Invoke-WebRequest -Uri https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile $msi
+          if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne '073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a') { throw 'stock MSI digest mismatch' }
+          $p = Start-Process msiexec.exe -ArgumentList '/i', $msi, '/qn', '/norestart', 'INSTALLLEVEL=1000' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "msiexec exit $($p.ExitCode)" }
+          $code = 'using System; using System.Runtime.InteropServices; public static class W { [DllImport("kernel32", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr LoadLibraryW(string p); [DllImport("kernel32")] public static extern IntPtr GetProcAddress(IntPtr m, string n); }'
+          Add-Type -TypeDefinition $code
+          $m = [W]::LoadLibraryW((Resolve-Path out\winfsp-x64.dll).Path)
+          if ($m -eq [IntPtr]::Zero) { throw "LoadLibrary failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+          foreach ($export in 'FspFileSystemCreate', 'FspPosixMapSidToUid') {
+            if ([W]::GetProcAddress($m, $export) -eq [IntPtr]::Zero) { throw "missing export $export" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winfsp-x64-dll
+          path: out/
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hash = (Get-Content out\winfsp-x64.dll.sha256).Split(' ')[0]
+          gh release create $env:GITHUB_REF_NAME out\winfsp-x64.dll out\winfsp-x64.dll.sha256 --repo $env:GITHUB_REPOSITORY --title $env:GITHUB_REF_NAME --notes "winfsp-x64.dll built from $env:GITHUB_SHA for the stock signed WinFsp 2.1.25156 driver. SHA-256 $hash. Lab-qualified only as a user-mode DLL beside the consumer executable; not an MSI."
