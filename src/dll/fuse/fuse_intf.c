@@ -2428,42 +2428,28 @@ static UINT16 fsp_fuse_intf_DirectoryMountTarget(FSP_FILE_SYSTEM *FileSystem,
 }
 
 /*
- * On a network volume the signed driver takes a target as this volume's once the
- * target's MUP provider answers, so a link a pod makes to \\host\share\x (in
- * whatever NT spelling reaches the driver from the container) is stored as the
- * volume path \host\share\x. The driver strips the part of the target naming
- * the volume; keep its answer only when that part names this volume: it ends,
- * on a component boundary, with this volume's prefix (\??\UNC\<prefix>,
- * \Device\Mup\<prefix>), or it is this volume's drive letter, \??\X:.
- * Returns the byte offset of the volume-relative remainder, or 0.
+ * On a network volume the signed driver accepts any \??\UNC\ target once its
+ * MUP provider lookup succeeds, so a link to \\host\share\x is stored as the
+ * volume path \host\share\x. Accept a UNC target only under this volume's own
+ * prefix, \??\UNC\<prefix>\<component>, and keep the driver's answer for every
+ * other form. Returns the byte offset of the volume-relative remainder, or 0.
  */
-static UINT16 fsp_fuse_intf_NetworkTarget(FSP_FILE_SYSTEM *FileSystem, PWSTR Prefix,
+static UINT16 fsp_fuse_intf_NetworkTarget(PWSTR Prefix,
     PWSTR TargetPath, SIZE_T TargetPathLength, UINT16 TargetOnFileSystem)
 {
-    SIZE_T Stripped = TargetOnFileSystem / sizeof(WCHAR), PrefixLength;
-    PWSTR MountPoint;
+    SIZE_T Length = TargetPathLength / sizeof(WCHAR), PrefixLength;
 
-    if (0 == Prefix[0] || 0 == TargetOnFileSystem || Stripped > TargetPathLength / sizeof(WCHAR))
+    if (0 == Prefix[0] || 8 > Length ||
+        0 != invariant_wcsnicmp(TargetPath, L"\\??\\UNC\\", 8))
         return TargetOnFileSystem;
     if (L'\\' == Prefix[0])
         Prefix++;
     PrefixLength = lstrlenW(Prefix);
-    if (0 < PrefixLength && Stripped > PrefixLength &&
-        L'\\' == TargetPath[Stripped - PrefixLength - 1] &&
-        0 == invariant_wcsnicmp(TargetPath + Stripped - PrefixLength, Prefix, PrefixLength))
-        return TargetOnFileSystem;
-    MountPoint = FspFileSystemMountPoint(FileSystem);
-    if (0 != MountPoint)
-    {
-        if (L'\\' == MountPoint[0] && L'\\' == MountPoint[1] &&
-            (L'.' == MountPoint[2] || L'?' == MountPoint[2]) && L'\\' == MountPoint[3])
-            MountPoint += 4;
-        if (2 == lstrlenW(MountPoint) && L':' == MountPoint[1] && 6 == Stripped &&
-            L'\\' == TargetPath[0] && L'?' == TargetPath[1] && L'?' == TargetPath[2] &&
-            L'\\' == TargetPath[3] && 0 == invariant_wcsnicmp(TargetPath + 4, MountPoint, 2))
-            return TargetOnFileSystem;
-    }
-    return 0;
+    if (0 == PrefixLength || 8 + PrefixLength + 1 >= Length ||
+        0 != invariant_wcsnicmp(TargetPath + 8, Prefix, PrefixLength) ||
+        L'\\' != TargetPath[8 + PrefixLength])
+        return 0;
+    return (UINT16)((8 + PrefixLength) * sizeof(WCHAR));
 }
 
 /*
@@ -2575,7 +2561,7 @@ static NTSTATUS fsp_fuse_intf_SetReparsePoint(FSP_FILE_SYSTEM *FileSystem,
                 ReparseTargetPathLength >= sizeof(WCHAR) && L'\\' == ReparseTargetPath[0])
             {
                 FSP_FSCTL_TRANSACT_REQ *Request = FspFileSystemGetOperationContext()->Request;
-                UINT16 TargetOnFileSystem = fsp_fuse_intf_NetworkTarget(FileSystem, f->VolumeParams.Prefix,
+                UINT16 TargetOnFileSystem = fsp_fuse_intf_NetworkTarget(f->VolumeParams.Prefix,
                     ReparseTargetPath, ReparseTargetPathLength,
                     Request->Req.FileSystemControl.TargetOnFileSystem);
 
